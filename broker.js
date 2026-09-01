@@ -6,8 +6,12 @@
 
 const HANDLERS = {
   async getStore() {
-    const d = await chrome.storage.local.get(['settings', 'scripts']);
-    return { settings: d.settings || {}, scripts: Array.isArray(d.scripts) ? d.scripts : [] };
+    const d = await chrome.storage.local.get(['settings','scripts','domainRuleGroups']);
+    return { 
+      settings: d.settings || {}, 
+      scripts: Array.isArray(d.scripts) ? d.scripts : [],
+      domainRuleGroups: Array.isArray(d.domainRuleGroups) ? d.domainRuleGroups : [] 
+    };
   },
   async setStore(patch) {
     await chrome.storage.local.set(patch);
@@ -24,6 +28,15 @@ const HANDLERS = {
         resolve({ ok: false, error: e.message });
       }
     });
+  },
+  async getDomainRuleGroups() {
+    const d = await chrome.storage.local.get(['domainRuleGroups']);
+    return Array.isArray(d.domainRuleGroups) ? d.domainRuleGroups : [];
+  },
+  async saveDomainRuleGroups(data) {
+    if (!Array.isArray(data)) throw new Error('Invalid data');
+    await chrome.storage.local.set({ domainRuleGroups: data });
+    return true;
   }
 };
 

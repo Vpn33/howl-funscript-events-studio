@@ -76,12 +76,115 @@ createApp({
       panelPosition: 'right',
       pushPlay: false
     });
+
+    // 域名规则组：{ id, name, domain, monitors[] } - 用于同一域名的多个监控器共享配置
+    const domainRuleGroups = reactive([]);
     const testResult = ref(null);
 
     async function persistSettings() {
       await setStore({ settings: JSON.parse(JSON.stringify(settings)) });
     }
     watch(settings, persistSettings, { deep: true });
+
+    // ================= 域名规则组管理 =================
+
+    async function loadDomainRuleGroups() {
+      const store = await loadStore();
+      domainRuleGroups.length = 0;
+      if (Array.isArray(store.domainRuleGroups)) {
+        domainRuleGroups.push(...store.domainRuleGroups);
+      }
+    }
+
+    async function saveDomainRuleGroups() {
+      const store = await loadStore();
+      store.domainRuleGroups = JSON.parse(JSON.stringify(domainRuleGroups));
+      await setStore(store);
+    }
+
+    // 域名规则组的 CRUD 方法
+    const editingRuleGroupId = ref('');
+    const editingRuleGroupName = ref('');
+    const editingRuleGroupDomain = ref('');
+    const editingRuleGroupMonitors = ref([]);
+    const editingRuleGroupEnabled = ref(true);
+    const ruleGroupDialogVisible = ref(false);
+
+    function getEventIds(s) {
+      if (!s || !s.funscript || !Array.isArray(s.funscript.events)) return [];
+      return s.funscript.events.map(ev => ev.id || '').filter(Boolean);
+    }
+
+    function validateDomain(domain) {
+      // 验证域名字符串：支持通配符 *
+      const pattern = '^' + domain.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+      return new RegExp(pattern).test(location.hostname);
+    }
+
+    function addDomainRuleGroup() {
+      const last = domainRuleGroups[domainRuleGroups.length - 1];
+      const def = last || { enabled: true, type: 'dom', selector: '', observe: 'text', attrName: '', match: 'equals', eventId: '' };
+      domainRuleGroups.push({ id: uuid(), name: (def.name || '新规则组') + '_' + (domainRuleGroups.length + 1), domain: (def.domain || ''), enabled: true, monitors: JSON.parse(JSON.stringify(def.monitors || [])) });
+    }
+
+    function removeDomainRuleGroup(idx) {
+      if (idx >= 0 && idx < domainRuleGroups.length) {
+        domainRuleGroups.splice(idx, 1);
+        saveDomainRuleGroups();
+        ElMessage.success('已删除');
+      }
+    }
+
+    function editDomainRuleGroup(idx) {
+      const group = domainRuleGroups[idx];
+      editingRuleGroupId.value = group?.id || '';
+      editingRuleGroupName.value = group?.name || '';
+      editingRuleGroupDomain.value = group?.domain || '';
+      editingRuleGroupMonitors.value = JSON.parse(JSON.stringify(group?.monitors || []));
+      ruleGroupDialogVisible.value = true;
+    }
+
+    function saveDomainRuleGroup() {
+      const idx = domainRuleGroups.findIndex(g => g.id === editingRuleGroupId.value);
+      if (idx >= 0) {
+        domainRuleGroups[idx].name = editingRuleGroupName.value || '规则组';
+        domainRuleGroups[idx].domain = editingRuleGroupDomain.value.trim();
+        domainRuleGroups[idx].enabled = editingRuleGroupEnabled.value;
+        domainRuleGroups[idx].monitors = JSON.parse(JSON.stringify(editingRuleGroupMonitors.value));
+        saveDomainRuleGroups();
+        ruleGroupDialogVisible.value = false;
+        ElMessage.success('已保存');
+      } else {
+        // 新规则组
+        domainRuleGroups.push({
+          id: editingRuleGroupId.value || uuid(),
+          name: editingRuleGroupName.value || '规则组',
+          domain: editingRuleGroupDomain.value.trim(),
+          enabled: editingRuleGroupEnabled.value,
+          monitors: JSON.parse(JSON.stringify(editingRuleGroupMonitors.value))
+        });
+        saveDomainRuleGroups();
+        ruleGroupDialogVisible.value = false;
+        ElMessage.success('已保存');
+      }
+    }
+
+    // 辅助函数：从模板中添加监控器到域名规则组编辑列表
+    function addDomainRuleGroupMonitor() {
+      editingRuleGroupMonitors.value.push({ 
+        id: uuid(), 
+        enabled: true, 
+        type: 'dom', 
+        observe: 'text', 
+        selector: '', 
+        attrName: ''
+      });
+    }
+
+    // 通过后台消息保存域名规则组
+    async function bgSaveDomainRuleGroups() {
+      return bridgeCall('bg', { type: 'HFES_SAVE_DOMAIN_RULE_GROUPS', data: domainRuleGroups });
+    }
 
     async function testConnection() {
       if (!settings.host) { testResult.value = { ok: false, text: '请先填写设备地址' }; return ElMessage.warning('请先填写设备地址'); }
@@ -158,6 +261,7 @@ createApp({
       editingName.value = '新建脚本';
       applyImport({ metadata: { title: '' }, events: [], version: '1.0' });
       mainTab.value = 'editor';
+      nextTick(() => setTimeout(draw, 80));
     }
 
     function editScript(row) {
@@ -165,6 +269,7 @@ createApp({
       editingName.value = scriptTitle(row);
       applyImport(JSON.parse(JSON.stringify(row.funscript)));
       mainTab.value = 'editor';
+      nextTick(() => setTimeout(draw, 80));
     }
 
     function exitEditing() {
@@ -217,7 +322,10 @@ createApp({
     const assocScriptName = ref('');
     const assocUrl = ref('');
     const assocUrlPrefix = ref(false);
-    const assocMonitors = ref([]);
+    const assocTriggers = ref([]);
+    const editingId = ref(null);
+    const editingName = ref('');
+    
     const assocEventIds = computed(() => {
       const s = scripts.value.find(x => x.id === assocScriptId.value);
       if (!s) return [];
@@ -225,21 +333,30 @@ createApp({
       return [];
     });
 
-    // 监控器类型切换时修正默认监控对象（DOM: text/attr；URL: full/path/query/hash）
-    function onMonTypeChange(m) {
-      const urlObs = ['full', 'path', 'query', 'hash'];
-      if (m.type === 'url') {
-        if (!urlObs.includes(m.observe)) m.observe = 'full';
-      } else {
-        if (!['text', 'attr'].includes(m.observe)) m.observe = 'text';
+    // 所有域名规则组的 monitors，供 trigger 引用
+    // 注意：domainRuleGroups 是 reactive([])，不要加 .value
+    const allMonitorsForTrigger = computed(() => {
+      const result = [];
+      for (const g of domainRuleGroups) {
+        if (!g.enabled) continue;
+        for (const m of (g.monitors || [])) {
+          if (m.enabled === false) continue;
+          result.push({ ...m, _groupName: g.name, _groupId: g.id });
+        }
       }
-    }
+      return result;
+    });
 
-    function addAssocMonitor() {
-      if (!assocEventIds.value.length) return ElMessage.warning('该脚本没有事件，请先在编辑器中添加事件');
-      const last = assocMonitors.value[assocMonitors.value.length - 1];
-      const def = last || { enabled: true, type: 'dom', selector: '', observe: 'text', attrName: '', match: 'equals', eventId: assocEventIds.value[0] };
-      assocMonitors.value.push({ id: uuid(), ...Object.assign({}, def), value: '' });
+    function addAssocTrigger() {
+      // 用上一个触发器做模板（清空 value，eventId 自动设为第一个未占用的）
+      const last = assocTriggers.value[assocTriggers.value.length - 1];
+      const base = last ? { enabled: last.enabled !== false, monitorId: last.monitorId || '', match: last.match || 'equals' }
+                        : { enabled: true, monitorId: '', match: 'equals' };
+      // 找第一个未被当前 triggers 占用的 eventId
+      const usedIds = new Set(assocTriggers.value.map(t => t.eventId).filter(Boolean));
+      const allIds = assocEventIds.value;
+      const freeEventId = allIds.find(id => !usedIds.has(id)) || allIds[0] || '';
+      assocTriggers.value.push({ id: uuid(), ...base, value: '', eventId: freeEventId });
     }
 
     function openAssociate(row) {
@@ -248,9 +365,8 @@ createApp({
       assocScriptName.value = scriptTitle(row);
       assocUrl.value = row.url || '';
       assocUrlPrefix.value = row.urlMatch === 'prefix';
-      // 规范化旧数据：无 type 的监控器默认为 DOM 类型
-      assocMonitors.value = (row.monitors || []).map(m => Object.assign({ type: 'dom', observe: 'text' }, m));
-      if (!assocMonitors.value.length) assocMonitors.value.push({ id: uuid(), enabled: true, type: 'dom', selector: '', observe: 'text', attrName: '', match: 'equals', value: '', eventId: assocEventIds.value[0] || '' });
+      assocTriggers.value = JSON.parse(JSON.stringify(row.triggers || []));
+      if (!assocTriggers.value.length) assocTriggers.value.push({ id: uuid(), enabled: true, monitorId: '', match: 'equals', value: '', eventId: assocEventIds.value[0] || '' });
       assocVisible.value = true;
     }
 
@@ -259,14 +375,13 @@ createApp({
       const store = await loadStore();
       const list = store.scripts;
       if (url) {
-        // 同 URL 唯一：清除其他脚本上的相同关联
         list.forEach(s => { if (s.id !== assocScriptId.value && s.url === url) { s.url = ''; s.urlMatch = 'exact'; } });
       }
       const target = list.find(s => s.id === assocScriptId.value);
       if (target) {
         target.url = url;
         target.urlMatch = assocUrlPrefix.value ? 'prefix' : 'exact';
-        target.monitors = JSON.parse(JSON.stringify(assocMonitors.value));
+        target.triggers = JSON.parse(JSON.stringify(assocTriggers.value));
       }
       await setStore({ scripts: list });
       await refreshScripts();
@@ -277,8 +392,6 @@ createApp({
     // ================= 编辑器（移植自 howl-events-editor.html） =================
     const meta = reactive({ title: '', topic_url: '', topic_tags: '', topic_creator: '', topic_date: '' });
     const version = ref('');
-    const editingId = ref(null);
-    const editingName = ref('');
 
     const events = reactive([]);
     const activeName = ref('0');
@@ -984,6 +1097,11 @@ createApp({
       const store = await loadStore();
       Object.assign(settings, store.settings);
       scripts.value = store.scripts;
+      // 同时加载域名规则组（监控器）
+      domainRuleGroups.length = 0;
+      if (Array.isArray(store.domainRuleGroups)) {
+        domainRuleGroups.push(...store.domainRuleGroups);
+      }
       draw();
       window.addEventListener('resize', draw);
     });
@@ -996,8 +1114,12 @@ createApp({
       triggerImportFile, importFileRef, onImportFiles, createNewScript,
       editScript, exitEditing, saveToLibrary, removeScript,
       // 关联
-      assocVisible, assocScriptName, assocUrl, assocUrlPrefix, assocMonitors, assocEventIds,
-      addAssocMonitor, openAssociate, saveAssociate, onMonTypeChange,
+      assocVisible, assocScriptName, assocUrl, assocUrlPrefix, assocTriggers, assocEventIds, allMonitorsForTrigger,
+      addAssocTrigger, openAssociate, saveAssociate,
+      // 域名规则组
+      domainRuleGroups, addDomainRuleGroup, removeDomainRuleGroup, editDomainRuleGroup,
+      saveDomainRuleGroup, ruleGroupDialogVisible, editingRuleGroupId, editingRuleGroupName, editingRuleGroupDomain, editingRuleGroupMonitors, editingRuleGroupEnabled,
+      addDomainRuleGroupMonitor,
       // 编辑器
       meta, version, events, activeName, activeIndex, activeEvent, totalActions, eventMaxAt,
       addEvent, duplicateEvent, removeEvent, addAction, removeAction, sortDedupe, invert,

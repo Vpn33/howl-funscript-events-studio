@@ -12,9 +12,10 @@
 
   // ---------------- DOM 监控 ----------------
 
-  let activeMonitors = [];   // 当前 URL 匹配脚本的监控器列表
-  let lastFired = new Map(); // monitorId -> 上次触发时的元素值（同值不重复触发）
-  let currentMatchKey = null; // 当前应用的脚本 id（判断是否切换脚本）
+  let activeMonitors = [];   // 当前生效的监控器（只含 selector/observe，来自域名规则组）
+  let activeTriggers = [];   // 当前生效的触发器（monitorId + match/value/eventId，来自匹配脚本）
+  let lastValues = new Map(); // monitorId -> 上次读到的值（值变化时重新判断 triggers）
+  let currentMatchKey = null; // 当前匹配 key（domainGroupId + scriptId 组合）
   let mo = null;
   let evalTimer = null;
 
@@ -71,40 +72,53 @@
     return r.ok && !r.error;
   }
 
-  // 「测试」按钮：在当前页面即时验证一条监控器（不真正触发事件）
-  function testMonitor(m, resultEl) {
+  // 「测试」按钮：支持两种模式
+  //   testMonitor(monitor, resultEl)  — 只读取当前值（monitor 无条件）
+  //   testMonitor(monitor, trigger, resultEl) — 读取值 + 按 trigger 的条件判断
+  function testMonitor() {
+    const args = arguments;
+    const resultEl = args[args.length - 1];
+    const monitor = args[0];
+    const trigger = args.length >= 3 ? args[1] : null;
+
     let v = null;
-    if ((m.type || 'dom') === 'url') {
-      v = readUrlValue(m);
+    if ((monitor.type || 'dom') === 'url') {
+      v = readUrlValue(monitor);
     } else {
       let els;
-      try { els = document.querySelectorAll(m.selector || ''); } catch (e) {
+      try { els = document.querySelectorAll(monitor.selector || ''); } catch (e) {
         resultEl.textContent = '✗ 选择器无效: ' + e.message;
         resultEl.className = 'mon-result bad';
         return;
       }
       const elm = els && els[0];
       if (!elm) {
-        resultEl.textContent = '✗ 未找到元素: ' + (m.selector || '(选择器为空)');
+        resultEl.textContent = '✗ 未找到元素: ' + (monitor.selector || '(选择器为空)');
         resultEl.className = 'mon-result bad';
         return;
       }
-      v = readValue(elm, m);
+      v = readValue(elm, monitor);
       if (v == null) {
-        resultEl.textContent = '✗ 未读到值' + ((m.observe || 'text') === 'attr' ? '（属性 ' + (m.attrName || '?') + ' 不存在）' : '');
+        resultEl.textContent = '✗ 未读到值' + ((monitor.observe || 'text') === 'attr' ? '（属性 ' + (monitor.attrName || '?') + ' 不存在）' : '');
         resultEl.className = 'mon-result bad';
         return;
       }
     }
-    const r = isMatchDetailed(m, v);
     const preview = v.length > 36 ? v.slice(0, 36) + '…' : v;
+
+    if (!trigger) {
+      // 只读值模式
+      resultEl.textContent = '当前值: "' + preview + '"';
+      resultEl.className = 'mon-result';
+      return;
+    }
+    // trigger 条件匹配模式
+    const r = isMatchDetailed(trigger, v);
     if (r.error) {
       resultEl.textContent = '✗ ' + r.error;
       resultEl.className = 'mon-result bad';
-      return;
-    }
-    if (r.ok) {
-      resultEl.textContent = '✓ 匹配，当前值: "' + preview + '" → 将触发 ' + (m.eventId || '(未选事件)');
+    } else if (r.ok) {
+      resultEl.textContent = '✓ 匹配! 值: "' + preview + '" → 触发 ' + (trigger.eventId || '(未选事件)');
       resultEl.className = 'mon-result';
     } else {
       resultEl.textContent = '✗ 不匹配，当前值: "' + preview + '"';
@@ -128,27 +142,32 @@
   }
 
   function evaluateMonitors() {
-    for (const m of activeMonitors) {
-      if (m.enabled === false) continue;
+    for (const monitor of activeMonitors) {
+      if (monitor.enabled === false) continue;
       let v;
-      if ((m.type || 'dom') === 'url') {
-        v = readUrlValue(m);
+      if ((monitor.type || 'dom') === 'url') {
+        v = readUrlValue(monitor);
       } else {
         let els;
-        try { els = document.querySelectorAll(m.selector || ''); } catch { continue; }
+        try { els = document.querySelectorAll(monitor.selector || ''); } catch { continue; }
         const el = els && els[0];
         if (!el) continue;
-        v = readValue(el, m);
+        v = readValue(el, monitor);
       }
-      const key = m.id || m.selector + '|' + m.eventId;
-      const prev = lastFired.get(key);
-      if (isMatch(m, v) && v !== prev) {
-        // 值满足条件且与上次触发值不同（含初始状态即满足、以及变化为期望值）
-        lastFired.set(key, v);
-        triggerEvent(m.eventId, m);
-      } else if (!isMatch(m, v) && prev !== undefined) {
-        // 值离开匹配状态后重置，允许下次再次进入时触发
-        lastFired.delete(key);
+      const prev = lastValues.get(monitor.id);
+      if (v != null && v !== prev) {
+        lastValues.set(monitor.id, v);
+        // 扫所有 triggers：引用此 monitorId 的，条件匹配就触发
+        for (const trigger of activeTriggers) {
+          if (trigger.enabled === false) continue;
+          if (trigger.monitorId !== monitor.id) continue;
+          if (isMatch(trigger, v)) {
+            triggerEvent(trigger.eventId, monitor);
+          }
+        }
+      } else if (prev !== undefined && v == null) {
+        // 元素消失 / URL 读不到值 → 重置，以便下次出现时重新判断
+        lastValues.delete(monitor.id);
       }
     }
   }
@@ -169,29 +188,43 @@
     clearTimeout(evalTimer);
   }
 
-  function applyMatched(matched) {
-    const newKey = matched && matched.id ? matched.id : null;
+  function applyMatched(msg) {
+    // msg = { domainRule, matchedScript, monitors, triggers, settings }
+    const newKey = (msg && msg.domainRule ? 'D:' + msg.domainRule.id : '') +
+                   (msg && msg.matchedScript ? 'S:' + msg.matchedScript.id : '');
     if (newKey !== currentMatchKey) {
-      // 切换了脚本（或取消匹配）：重置触发状态
-      lastFired.clear();
+      // 切换了域名规则组或脚本 → 清空所有状态
+      lastValues.clear();
     } else {
-      // 同一脚本重新应用（保存配置 / SPA 导航 / 后台重发）：
-      // 保留触发状态，避免同一值重复触发；仅清理已不存在的监控器
-      const keys = new Set(activeMonitors.map(m => m.id || m.selector + '|' + m.eventId));
-      for (const k of Array.from(lastFired.keys())) {
-        if (!keys.has(k)) lastFired.delete(k);
+      // 同规则同脚本重新应用 → 清理已删除 monitor 的残留值
+      const validIds = new Set((msg && msg.monitors || []).map(m => m.id));
+      for (const k of Array.from(lastValues.keys())) {
+        if (!validIds.has(k)) lastValues.delete(k);
       }
     }
     currentMatchKey = newKey;
 
     stopObserving();
-    activeMonitors = matched && Array.isArray(matched.monitors) ? matched.monitors.slice() : [];
+
+    activeMonitors = msg && Array.isArray(msg.monitors)
+      ? msg.monitors.filter(m => m.enabled !== false)
+      : [];
+    activeTriggers = msg && Array.isArray(msg.triggers)
+      ? msg.triggers.filter(t => t.enabled !== false)
+      : [];
+
+    // 缓存供面板读取
+    lastDomainRule = msg && msg.domainRule ? msg.domainRule : null;
+    lastMatchedScript = msg && msg.matchedScript ? msg.matchedScript : null;
+
     if (activeMonitors.length) {
       startObserving();
-      // 初始检查：元素初始状态或当前 URL 即满足条件也触发一次
       setTimeout(() => evaluateMonitors(), 300);
     }
   }
+
+  let lastDomainRule = null;
+  let lastMatchedScript = null;
 
   // ---------------- URL 变化监听（SPA 翻页 / hash 路由） ----------------
   // 内容脚本隔离环境 patch history 无法拦截页面调用，采用轻量轮询（300ms 字符串比对）
@@ -211,15 +244,13 @@
   // ---------------- 关联面板 ----------------
 
   let host = null;
-  let panelState = { scripts: [], settings: null, url: '', matchedId: null };
-  let panelMonitors = []; // 面板内编辑中的监控器（尚未保存）
+  let panelState = { scripts: [], settings: null, url: '' };
+  let panelMonitors = [];   // 编辑中的监控器（只含 selector/observe）
+  let panelTriggers = [];   // 编辑中的触发器（monitorId + match/value/eventId）
   let panelScriptId = '';
-
-  const POS_STYLE = {
-    left: { top: '0', left: '0', width: '340px', height: '100vh', borderRight: '1px solid #3a3a4a' },
-    right: { top: '0', right: '0', width: '340px', height: '100vh', borderLeft: '1px solid #3a3a4a' },
-    bottom: { left: '0', bottom: '0', width: '340px', height: '300px', borderTop: '1px solid #3a3a4a' }
-  };
+  let panelDomainGroupId = '';
+  let panelDomainGroupName = '';
+  let panelDomainMatched = false;
 
   function panelCss() {
     return `
@@ -252,7 +283,9 @@
       .mon .row:last-child { margin-bottom: 0; }
       .mon .grow { flex: 1; }
       .mon .lbl { font-size: 11px; color: #8f8fa3; min-width: 34px; }
-      .mon .del { background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 15px; }
+      .mon .del-btn { background: transparent; border: 1px solid #ff6b6b55; color: #ff9090; border-radius: 4px;
+                     cursor: pointer; font-size: 12px; padding: 1px 10px; margin-left: auto; }
+      .mon .del-btn:hover { background: #ff6b6b22; border-color: #ff9090; color: #ffb0b0; }
       .mon .chk { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #a0a0b8; }
       .mon .test { background: #2e6da4; color: #fff; border: none; border-radius: 4px;
                    padding: 4px 14px; cursor: pointer; font-size: 12px; }
@@ -261,6 +294,7 @@
                     margin-left: 6px; }
       .mon-result.bad { color: #ff9090; }
       .mon-result:empty { display: none; }
+      .mon-readonly { background: #1e1e28; border: 1px dashed #3a3a4a; opacity: 0.85; }
       .chkline { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #a0a0b8;
                  margin-top: 6px; cursor: pointer; }
       .chkline input { width: auto; accent-color: #7c5cff; cursor: pointer; }
@@ -310,11 +344,11 @@
     panelState.settings = Object.assign({}, panelState.settings, { panelPosition: pos });
   }
 
-  function monitorCard(m, idx) {
+  function monitorCard(m, idx, readonly) {
     const card = el('div', 'mon');
-
-    // 启用 + 类型 + 删除
     const isUrl = (m.type || 'dom') === 'url';
+
+    // 启用 + 类型 + 删除（只读时隐藏删除按钮）
     const r0 = el('div', 'row');
     const chk = el('label', 'chk');
     const cb = document.createElement('input');
@@ -322,82 +356,183 @@
     cb.onchange = () => { m.enabled = cb.checked; };
     chk.appendChild(cb); chk.appendChild(el('span', null, '启用'));
     r0.appendChild(chk);
-    const typeSel = document.createElement('select');
-    typeSel.className = 'grow';
-    typeSel.innerHTML = '<option value="dom">监控 DOM 元素</option><option value="url">监控页面 URL</option>';
-    typeSel.value = isUrl ? 'url' : 'dom';
-    typeSel.onchange = () => {
-      m.type = typeSel.value;
-      m.observe = m.type === 'url' ? 'full' : 'text';
-      renderMonitors();
-    };
-    r0.appendChild(typeSel);
-    const del = el('button', 'del', '✕');
-    del.title = '删除此监控器';
-    del.onclick = () => { panelMonitors.splice(idx, 1); renderMonitors(); };
-    r0.appendChild(del);
+    if (readonly) {
+      const typeLabel = el('span', 'grow', isUrl ? '页面 URL' : 'DOM 元素');
+      typeLabel.style.color = '#909399';
+      typeLabel.style.fontSize = '12px';
+      r0.appendChild(typeLabel);
+    } else {
+      const typeSel = document.createElement('select');
+      typeSel.className = 'grow';
+      typeSel.innerHTML = '<option value="dom">DOM 元素</option><option value="url">页面 URL</option>';
+      typeSel.value = isUrl ? 'url' : 'dom';
+      typeSel.onchange = () => {
+        m.type = typeSel.value;
+        m.observe = m.type === 'url' ? 'full' : 'text';
+        renderMonitors();
+      };
+      r0.appendChild(typeSel);
+      const del = el('button', 'del-btn', '删除');
+      del.title = '删除此监控器';
+      del.onclick = () => {
+        panelMonitors.splice(idx, 1);
+        panelTriggers = panelTriggers.filter(t => t.monitorId !== m.id);
+        renderMonitors();
+        renderTriggers();
+      };
+      r0.appendChild(del);
+    }
     card.appendChild(r0);
 
     if (isUrl) {
-      // URL 监控对象：整个 URL / 路径 / 查询参数 / 哈希
-      const r2 = el('div', 'row');
-      r2.appendChild(el('span', 'lbl', '监控'));
-      const obs = document.createElement('select');
-      obs.className = 'grow';
-      obs.innerHTML =
-        '<option value="full">整个 URL</option>' +
-        '<option value="path">路径 (pathname)</option>' +
-        '<option value="query">查询参数 (?a=)</option>' +
-        '<option value="hash">哈希 (#...)</option>';
-      obs.value = m.observe || 'full';
-      obs.onchange = () => { m.observe = obs.value; renderMonitors(); };
-      r2.appendChild(obs);
-      card.appendChild(r2);
-
-      if ((m.observe || 'full') === 'query') {
-        const r2b = el('div', 'row');
-        r2b.appendChild(el('span', 'lbl', '参数名'));
-        const attr = document.createElement('input');
-        attr.type = 'text'; attr.value = m.attrName || ''; attr.placeholder = '如 page / id';
-        attr.className = 'grow';
-        attr.oninput = () => { m.attrName = attr.value; };
-        r2b.appendChild(attr);
-        card.appendChild(r2b);
+      if (readonly) {
+        const r2 = el('div', 'row');
+        r2.appendChild(el('span', 'lbl', '监控'));
+        const obsMap = { full: '整个 URL', path: '路径', query: '查询参数', hash: '哈希' };
+        r2.appendChild(el('span', 'grow', obsMap[m.observe] || m.observe || 'full'));
+        card.appendChild(r2);
+        if ((m.observe || 'full') === 'query') {
+          const r2b = el('div', 'row');
+          r2b.appendChild(el('span', 'lbl', '参数名'));
+          r2b.appendChild(el('span', 'grow', m.attrName || ''));
+          card.appendChild(r2b);
+        }
+      } else {
+        const r2 = el('div', 'row');
+        r2.appendChild(el('span', 'lbl', '监控'));
+        const obs = document.createElement('select');
+        obs.className = 'grow';
+        obs.innerHTML =
+          '<option value="full">整个 URL</option>' +
+          '<option value="path">路径</option>' +
+          '<option value="query">查询参数</option>' +
+          '<option value="hash">哈希</option>';
+        obs.value = m.observe || 'full';
+        obs.onchange = () => { m.observe = obs.value; renderMonitors(); };
+        r2.appendChild(obs);
+        card.appendChild(r2);
+        if ((m.observe || 'full') === 'query') {
+          const r2b = el('div', 'row');
+          r2b.appendChild(el('span', 'lbl', '参数名'));
+          const attr = document.createElement('input');
+          attr.type = 'text'; attr.value = m.attrName || ''; attr.placeholder = '如 page / id';
+          attr.className = 'grow';
+          attr.oninput = () => { m.attrName = attr.value; };
+          r2b.appendChild(attr);
+          card.appendChild(r2b);
+        }
       }
     } else {
-      // 选择器
-      const r1 = el('div', 'row');
-      r1.appendChild(el('span', 'lbl', '选择'));
-      const sel = document.createElement('input');
-      sel.type = 'text'; sel.value = m.selector || ''; sel.placeholder = 'CSS 选择器，如 .page-num';
-      sel.className = 'grow';
-      sel.oninput = () => { m.selector = sel.value; };
-      r1.appendChild(sel);
-      card.appendChild(r1);
+      if (readonly) {
+        const r1 = el('div', 'row');
+        r1.appendChild(el('span', 'lbl', '选择'));
+        const selSpan = el('span', 'grow', m.selector || '');
+        selSpan.style.fontFamily = 'monospace';
+        selSpan.style.fontSize = '11px';
+        selSpan.style.color = '#909399';
+        r1.appendChild(selSpan);
+        card.appendChild(r1);
+        const r2 = el('div', 'row');
+        r2.appendChild(el('span', 'lbl', '监控'));
+        const obsMap = { text: '元素文本', attr: '元素属性' };
+        r2.appendChild(el('span', 'grow', obsMap[m.observe] || m.observe || 'text'));
+        card.appendChild(r2);
+        if ((m.observe || 'text') === 'attr') {
+          const r2b = el('div', 'row');
+          r2b.appendChild(el('span', 'lbl', '属性名'));
+          r2b.appendChild(el('span', 'grow', m.attrName || ''));
+          card.appendChild(r2b);
+        }
+      } else {
+        const r1 = el('div', 'row');
+        r1.appendChild(el('span', 'lbl', '选择'));
+        const sel = document.createElement('input');
+        sel.type = 'text'; sel.value = m.selector || ''; sel.placeholder = 'CSS 选择器，如 .page-header span';
+        sel.className = 'grow';
+        sel.oninput = () => { m.selector = sel.value; };
+        r1.appendChild(sel);
+        card.appendChild(r1);
 
-      // 监控对象：文本 / 属性
-      const r2 = el('div', 'row');
-      r2.appendChild(el('span', 'lbl', '监控'));
-      const obs = document.createElement('select');
-      obs.className = 'grow';
-      obs.innerHTML = '<option value="text">元素文本 (text)</option><option value="attr">元素属性 (attr)</option>';
-      obs.value = m.observe || 'text';
-      obs.onchange = () => { m.observe = obs.value; renderMonitors(); };
-      r2.appendChild(obs);
-      card.appendChild(r2);
-
-      if ((m.observe || 'text') === 'attr') {
-        const r2b = el('div', 'row');
-        r2b.appendChild(el('span', 'lbl', '属性名'));
-        const attr = document.createElement('input');
-        attr.type = 'text'; attr.value = m.attrName || ''; attr.placeholder = '如 data-page / href';
-        attr.className = 'grow';
-        attr.oninput = () => { m.attrName = attr.value; };
-        r2b.appendChild(attr);
-        card.appendChild(r2b);
+        const r2 = el('div', 'row');
+        r2.appendChild(el('span', 'lbl', '监控'));
+        const obs = document.createElement('select');
+        obs.className = 'grow';
+        obs.innerHTML = '<option value="text">元素文本</option><option value="attr">元素属性</option>';
+        obs.value = m.observe || 'text';
+        obs.onchange = () => { m.observe = obs.value; renderMonitors(); };
+        r2.appendChild(obs);
+        card.appendChild(r2);
+        if ((m.observe || 'text') === 'attr') {
+          const r2b = el('div', 'row');
+          r2b.appendChild(el('span', 'lbl', '属性名'));
+          const attr = document.createElement('input');
+          attr.type = 'text'; attr.value = m.attrName || ''; attr.placeholder = '如 data-page / href';
+          attr.className = 'grow';
+          attr.oninput = () => { m.attrName = attr.value; };
+          r2b.appendChild(attr);
+          card.appendChild(r2b);
+        }
       }
     }
 
+    // 测试按钮（两种模式都保留）
+    const r6 = el('div', 'row');
+    r6.appendChild(el('span', 'lbl', ''));
+    const testBtn = el('button', 'test', '读取当前值');
+    testBtn.type = 'button';
+    const result = el('div', 'mon-result');
+    testBtn.onclick = () => testMonitor(m, result);
+    r6.appendChild(testBtn);
+    r6.appendChild(result);
+    result.classList.add('grow');
+    card.appendChild(r6);
+
+    if (readonly) card.classList.add('mon-readonly');
+    return card;
+  }
+
+  function triggerCard(t, idx) {
+    const card = el('div', 'mon');
+
+    // 启用 + 删除（删除靠右）
+    const r0 = el('div', 'row');
+    const chk = el('label', 'chk');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = t.enabled !== false;
+    cb.onchange = () => { t.enabled = cb.checked; };
+    chk.appendChild(cb); chk.appendChild(el('span', null, '启用'));
+    r0.appendChild(chk);
+    // 空占位把后面的删除按钮推到最右
+    const spacer = document.createElement('span');
+    spacer.className = 'grow';
+    r0.appendChild(spacer);
+    const del = el('button', 'del-btn', '删除');
+    del.title = '删除此触发器';
+    del.onclick = () => { panelTriggers.splice(idx, 1); renderTriggers(); };
+    r0.appendChild(del);
+    card.appendChild(r0);
+
+    // 引用哪个 monitor（panelMonitors 为空时 fallback 到 activeMonitors）
+    const r1 = el('div', 'row');
+    r1.appendChild(el('span', 'lbl', '来源'));
+    const monSel = document.createElement('select');
+    monSel.className = 'grow';
+    const monitorSrc = panelMonitors.length ? panelMonitors : activeMonitors;
+    console.log('[HFES] triggerCard monitor source:', monitorSrc.length, monitorSrc.map(m => m.id), 'chosen:', t.monitorId);
+    let mopts = '<option value="">(选择监控器)</option>';
+    monitorSrc.forEach(m => {
+      const label = (m.type || 'dom') === 'url'
+        ? `URL · ${m.observe}${m.attrName ? '(' + m.attrName + ')' : ''}`
+        : `DOM · ${(m.selector || '(空)').slice(0, 30)}`;
+      mopts += `<option value="${escapeHtml(m.id)}">${escapeHtml(label)}</option>`;
+    });
+    monSel.innerHTML = mopts;
+    monSel.value = t.monitorId || '';
+    monSel.onchange = () => { t.monitorId = monSel.value; };
+    r1.appendChild(monSel);
+    card.appendChild(r1);
+
+    // 条件
     const r3 = el('div', 'row');
     r3.appendChild(el('span', 'lbl', '条件'));
     const mt = document.createElement('select');
@@ -405,22 +540,23 @@
     mt.innerHTML =
       '<option value="equals">值等于 (==)</option>' +
       '<option value="notEquals">值不等于 (!=)</option>' +
-      '<option value="contains">值包含 (indexOf)</option>' +
+      '<option value="contains">值包含</option>' +
       '<option value="notContains">值不包含</option>' +
-      '<option value="startsWith">值开头为 (startsWith)</option>' +
-      '<option value="endsWith">值结尾为 (endsWith)</option>' +
-      '<option value="regex">正则匹配 (RegExp.test)</option>';
-    mt.value = m.match || 'equals';
-    mt.onchange = () => { m.match = mt.value; };
+      '<option value="startsWith">值开头为</option>' +
+      '<option value="endsWith">值结尾为</option>' +
+      '<option value="regex">正则匹配</option>';
+    mt.value = t.match || 'equals';
+    mt.onchange = () => { t.match = mt.value; };
     r3.appendChild(mt);
     card.appendChild(r3);
 
+    // 当值
     const r4 = el('div', 'row');
     r4.appendChild(el('span', 'lbl', '当值'));
     const val = document.createElement('input');
-    val.type = 'text'; val.value = m.value || ''; val.placeholder = '期望值，如 3';
+    val.type = 'text'; val.value = t.value || ''; val.placeholder = '期望值';
     val.className = 'grow';
-    val.oninput = () => { m.value = val.value; };
+    val.oninput = () => { t.value = val.value; };
     r4.appendChild(val);
     card.appendChild(r4);
 
@@ -431,26 +567,33 @@
     ev.className = 'grow';
     const script = panelState.scripts.find(s => s.id === panelScriptId);
     const ids = script ? script.eventIds.filter(Boolean) : [];
-    let opts = '';
-    ids.forEach(id => { opts += `<option value="${escapeHtml(id)}">事件: ${escapeHtml(id)}</option>`; });
-    if (m.eventId && !ids.includes(m.eventId)) opts += `<option value="${escapeHtml(m.eventId)}">${escapeHtml(m.eventId)} (不存在)</option>`;
-    if (!opts) opts = '<option value="">(该脚本无事件)</option>';
-    ev.innerHTML = opts;
-    ev.value = m.eventId || (ids.length ? ids[0] : '');
-    if (!m.eventId && ids.length) m.eventId = ids[0];
+    let eopts = '';
+    ids.forEach(id => { eopts += `<option value="${escapeHtml(id)}">事件: ${escapeHtml(id)}</option>`; });
+    if (t.eventId && !ids.includes(t.eventId)) eopts += `<option value="${escapeHtml(t.eventId)}">${escapeHtml(t.eventId)} (旧)</option>`;
+    if (!eopts) eopts = '<option value="">(该脚本无事件)</option>';
+    ev.innerHTML = eopts;
+    ev.value = t.eventId || '';
     if (ev.selectedIndex < 0) ev.value = '';
-    ev.onchange = () => { m.eventId = ev.value; };
+    ev.onchange = () => { t.eventId = ev.value; };
     r5.appendChild(ev);
     card.appendChild(r5);
 
-    // 测试按钮 + 结果行
+    // 测试按钮（条件匹配模式）
     const r6 = el('div', 'row');
     r6.appendChild(el('span', 'lbl', ''));
     const testBtn = el('button', 'test', '测试');
     testBtn.type = 'button';
-    testBtn.title = '在当前页面即时验证此条件（不会真正触发事件）';
+    testBtn.title = '即时验证此触发器（不会真正触发事件）';
     const result = el('div', 'mon-result');
-    testBtn.onclick = () => testMonitor(m, result);
+    testBtn.onclick = () => {
+      const mon = panelMonitors.find(m => m.id === t.monitorId);
+      if (!mon) {
+        result.textContent = '✗ 请先选择一个监控器';
+        result.className = 'mon-result bad';
+        return;
+      }
+      testMonitor(mon, t, result);
+    };
     r6.appendChild(testBtn);
     r6.appendChild(result);
     result.classList.add('grow');
@@ -467,48 +610,114 @@
     if (!host) return;
     const list = host.shadowRoot.getElementById('monList');
     list.innerHTML = '';
-    panelMonitors.forEach((m, i) => list.appendChild(monitorCard(m, i)));
+    const readonly = panelDomainMatched;
+    panelMonitors.forEach((m, i) => list.appendChild(monitorCard(m, i, readonly)));
     if (!panelMonitors.length) {
-      list.appendChild(el('div', 'empty', '暂无监控器，点击「+ 添加」创建'));
+      list.appendChild(el('div', 'empty', '暂无监控器' + (panelDomainMatched ? '' : '，点击「+ 添加」创建')));
+    }
+    // 控制「+ 添加」按钮：域名匹配时隐藏（monitor 来自规则组）
+    const addBtn = host.shadowRoot.getElementById('addMon');
+    if (addBtn) addBtn.style.display = readonly ? 'none' : '';
+    renderTriggers();
+  }
+
+  function renderTriggers() {
+    if (!host) return;
+    const list = host.shadowRoot.getElementById('trigList');
+    if (!list) return;
+    list.innerHTML = '';
+    panelTriggers.forEach((t, i) => list.appendChild(triggerCard(t, i)));
+    if (!panelTriggers.length) {
+      list.appendChild(el('div', 'empty', '暂无触发器，点击下方「+ 添加触发器」创建'));
     }
   }
 
   function renderPanel() {
+    if (!host) return;
     const root = host.shadowRoot;
-    const url = panelState.url;
-    const matchedScript = panelState.scripts.find(s => s.id === panelState.matchedId);
+    const hostname = location.hostname;
 
-    // 关联 URL（可编辑）+ 匹配方式
-    root.getElementById('urlInput').value = (matchedScript && matchedScript.url) || url || '';
-    root.getElementById('prefixChk').checked = !!(matchedScript && matchedScript.urlMatch === 'prefix');
+    // ===== 域名匹配状态 =====
+    const domainStatus = root.getElementById('domainStatus');
+    const domainLink = root.getElementById('domainLink');
+    const monSecTitle = root.getElementById('monSecTitle');
+    const monSecHint = root.getElementById('monSecHint');
+    if (panelDomainMatched) {
+      domainStatus.innerHTML = `<span style="color:#7fd08f;">✓ 已匹配: <b>${escapeHtml(panelDomainGroupName)}</b></span>`;
+      domainLink.innerHTML = `<button type="button" style="${linkBtnStyle()}">设置页编辑</button>`;
+      domainLink.onclick = () => { chrome.runtime.sendMessage({ type: 'HFES_OPEN_OPTIONS' }).catch(() => {}); };
+      if (monSecTitle) monSecTitle.innerHTML = '① 监控器 <span style="font-size:10px;color:#909399;font-weight:normal;">(来自规则组 · 只读)</span>';
+      if (monSecHint) monSecHint.innerHTML = '监控器定义<strong>观察什么</strong>（CSS 选择器 / URL），已由域名规则组配置，请到设置页修改。条件判断和触发在下方触发器里配置。';
+    } else {
+      domainStatus.innerHTML = `<span style="color:#ffb973;">⚠ "${escapeHtml(hostname)}" 未匹配域名规则组</span>`;
+      domainLink.innerHTML = `<button type="button" style="${linkBtnStyle()}">设置页创建</button>`;
+      domainLink.onclick = () => { chrome.runtime.sendMessage({ type: 'HFES_OPEN_OPTIONS' }).catch(() => {}); };
+      if (monSecTitle) monSecTitle.innerHTML = '① 监控器（只定义观察目标）';
+      if (monSecHint) monSecHint.innerHTML = '当前域名未匹配规则组，可临时添加监控器，或去设置页创建域名规则组（推荐）。';
+    }
 
-    // 关联脚本下拉
+    // ===== 关联脚本下拉 =====
     const sel = root.getElementById('scriptSel');
-    let opts = '<option value="">(不关联)</option>';
+    let opts = '<option value="">(选择 funscript)</option>';
     panelState.scripts.forEach(s => {
       const name = s.title || s.filename || s.id;
-      opts += `<option value="${escapeHtml(s.id)}">${escapeHtml(name)}${s.url && s.url !== url ? '  [' + escapeHtml(s.url) + ']' : ''}</option>`;
+      opts += `<option value="${escapeHtml(s.id)}">${escapeHtml(name)}${s.url ? '  [URL]' : ''}</option>`;
     });
     sel.innerHTML = opts;
-    sel.value = panelState.matchedId || '';
+    sel.value = panelScriptId || '';
     if (sel.selectedIndex < 0) sel.value = '';
-    panelScriptId = sel.value;
-    sel.onchange = () => { panelScriptId = sel.value; renderMonitors(); };
+    const prevScriptId = panelScriptId;
+    sel.onchange = () => {
+      panelScriptId = sel.value;
+      if (prevScriptId !== panelScriptId) renderTriggers();
+    };
 
-    // 预填当前匹配脚本的监控器
-    panelMonitors = matchedScript ? (matchedScript.monitors || []).map(m => Object.assign({}, m)) : [];
+    // 预填 monitors（来自域名规则组）——双保险：lastDomainRule 或 activeMonitors
+    const ruleMonitors = (lastDomainRule && lastDomainRule.monitors) || [];
+    const fillMonitors = ruleMonitors.length ? ruleMonitors : activeMonitors;
+    if (fillMonitors.length) {
+      panelMonitors = fillMonitors.map(m => Object.assign({}, m));
+      console.log('[HFES] prefill panelMonitors:', panelMonitors.length, panelMonitors.map(m => m.id));
+    } else {
+      console.log('[HFES] 无 monitors 可 prefill（lastDomainRule=', !!lastDomainRule, 'activeMonitors=', activeMonitors.length, '）');
+    }
+    // 预填 triggers（来自匹配脚本）
+    const scriptTriggers = (lastMatchedScript && lastMatchedScript.triggers) || [];
+    if (scriptTriggers.length) {
+      panelTriggers = scriptTriggers.map(t => Object.assign({}, t));
+      console.log('[HFES] prefill panelTriggers:', panelTriggers.length);
+    }
+
     renderMonitors();
+    setPosition(panelState.settings?.panelPosition || 'right');
+  }
 
-    setPosition(panelState.settings.panelPosition || 'right');
+  function linkBtnStyle() {
+    return 'background: transparent; color: #7c5cff; border: 1px solid #7c5cff; border-radius: 4px; padding: 2px 10px; cursor: pointer; font-size: 11px; text-decoration: none;';
   }
 
   async function openPanel() {
+    // 每次打开面板都清空，确保从 background 推送的最新状态重新加载
+    panelMonitors = [];
+    panelTriggers = [];
+
     const resp = await chrome.runtime.sendMessage({ type: 'HFES_GET_STATE', url: location.href });
     if (!resp || !resp.ok) { console.warn('[HFES] 获取状态失败'); return; }
-    panelState = { scripts: resp.scripts, settings: resp.settings, url: location.href, matchedId: resp.matchedId };
+    panelState = { scripts: resp.scripts, settings: resp.settings, url: location.href };
+
+    // 使用 background 在最后一次 evaluateTab 时推送过来的缓存信息
+    if (lastDomainRule) {
+      panelDomainMatched = true;
+      panelDomainGroupId = lastDomainRule.id;
+      panelDomainGroupName = lastDomainRule.name;
+    } else {
+      panelDomainMatched = false;
+      panelDomainGroupId = '';
+      panelDomainGroupName = '';
+    }
+    if (lastMatchedScript) panelScriptId = lastMatchedScript.id;
 
     if (!host) {
-      // 清理可能残留的旧面板节点（扩展重载前留下的孤儿 DOM）
       const stale = document.getElementById('__hfes_panel_host__');
       if (stale) stale.remove();
 
@@ -522,7 +731,7 @@
       const panel = el('div', 'panel');
       panel.innerHTML = `
         <div class="head">
-          <span class="title">Funscript 关联</span>
+          <span class="title">Funscript 监控面板</span>
           <span class="pos">
             <button data-pos="left">左</button><button data-pos="right">右</button><button data-pos="bottom">底</button>
           </span>
@@ -530,15 +739,37 @@
         </div>
         <div class="body">
           <div class="sec">
-            <label>关联 URL（可编辑，用于和访问地址匹配）</label>
-            <input type="text" id="urlInput" placeholder="留空则使用当前页地址">
-            <label class="chkline"><input type="checkbox" id="prefixChk"> 前缀匹配（URL 翻页网站勾选，访问地址以此开头即命中）</label>
+            <label>当前域名</label>
+            <div class="url">${escapeHtml(location.hostname)}</div>
+            <div style="margin-top:6px;" id="domainStatus"></div>
+            <div style="margin-top:4px;" id="domainLink"></div>
           </div>
-          <div class="sec"><label>关联脚本</label><select id="scriptSel"></select></div>
           <div class="sec">
-            <div class="sec-head"><label style="margin:0;">监控触发器（DOM / URL）</label><button class="add" id="addMon">+ 添加</button></div>
+            <label>关联 funscript（触发器事件来源）</label>
+            <select id="scriptSel"></select>
+          </div>
+
+          <div class="sec">
+            <div class="sec-head">
+              <label style="margin:0;" id="monSecTitle">① 监控器（只定义观察目标）</label>
+              <button class="add" id="addMon">+ 添加</button>
+            </div>
             <div id="monList"></div>
-            <div class="hint">监控器分两类：DOM 元素（文本/属性）与 页面 URL（整个地址/路径/查询参数/哈希）。值满足条件且发生变化时，调用对应事件 ID 到 Howl 的 /event 接口（支持 等于/不等于/包含/开头/结尾/正则）。「测试」按钮即时验证当前页面，不会真正触发。保存后立即生效。</div>
+            <div class="hint" id="monSecHint">
+              监控器只定义<strong>观察什么</strong>（CSS 选择器 / URL），条件判断和触发在下方触发器里配置。
+            </div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-head">
+              <label style="margin:0;">② 触发器（值 + 条件 → 事件）</label>
+              <button class="add" id="addTrig">+ 添加触发器</button>
+            </div>
+            <div id="trigList"></div>
+            <div class="hint">
+              触发器引用上面某个监控器，当<strong>该监控器读到的值变化</strong>时，判断条件是否满足，
+              满足则调用 funscript 里对应的事件 ID。
+            </div>
           </div>
         </div>
         <div class="foot">
@@ -551,9 +782,29 @@
 
       shadow.getElementById('closeBtn').onclick = closePanel;
       shadow.getElementById('addMon').onclick = () => {
-        if (!panelScriptId) { showToast('请先选择要关联的脚本', true); return; }
-        panelMonitors.push({ id: (crypto.randomUUID ? crypto.randomUUID() : 'm' + Date.now()), enabled: true, type: 'dom', selector: '', observe: 'text', match: 'equals', value: '', eventId: '' });
+        panelMonitors.push({
+          id: (crypto.randomUUID ? crypto.randomUUID() : 'm' + Date.now()),
+          enabled: true, type: 'dom', selector: '', observe: 'text', attrName: ''
+        });
         renderMonitors();
+      };
+      shadow.getElementById('addTrig').onclick = () => {
+        // 用上一个触发器做模板（清空 value，eventId 自动设为第一个未占用的）
+        const last = panelTriggers[panelTriggers.length - 1];
+        const base = last ? { enabled: last.enabled !== false, monitorId: last.monitorId || '', match: last.match || 'equals' }
+                          : { enabled: true, monitorId: panelMonitors.length ? panelMonitors[0].id : '', match: 'equals' };
+        // 找第一个未被当前 triggers 占用的 eventId
+        const script = panelState.scripts.find(s => s.id === panelScriptId);
+        const scriptIds = script ? script.eventIds.filter(Boolean) : [];
+        const usedIds = new Set(panelTriggers.map(t => t.eventId).filter(Boolean));
+        const freeEventId = scriptIds.find(id => !usedIds.has(id)) || scriptIds[0] || '';
+        panelTriggers.push({
+          id: (crypto.randomUUID ? crypto.randomUUID() : 't' + Date.now()),
+          ...base,
+          value: '',
+          eventId: freeEventId
+        });
+        renderTriggers();
       };
       shadow.querySelectorAll('.pos button').forEach(b => {
         b.onclick = async () => {
@@ -564,31 +815,37 @@
       shadow.getElementById('saveBtn').onclick = savePanel;
       document.documentElement.appendChild(host);
     }
-    // 填充数据并设置面板位置（左侧/右侧/底部）
     renderPanel();
-    
-    // 设置初始位置和高度
-    const panel = host.shadowRoot.querySelector('.panel');
-    const savedPos = panelState.settings?.panelPosition || 'right';
-    setPosition(savedPos);
+    setPosition(panelState.settings?.panelPosition || 'right');
   }
 
   async function savePanel() {
     if (!host) return;
-    // 关联 URL 使用面板中编辑后的值（留空回退当前地址）
-    const url = host.shadowRoot.getElementById('urlInput').value.trim() || location.href;
-    const urlMatch = host.shadowRoot.getElementById('prefixChk').checked ? 'prefix' : 'exact';
-    // 1) 保存关联
-    const r1 = await chrome.runtime.sendMessage({ type: 'HFES_ASSOCIATE', url, scriptId: panelScriptId, urlMatch });
-    if (!r1 || !r1.ok) { showToast('关联保存失败: ' + (r1 && r1.error || ''), true); return; }
-    // 2) 保存监控器
-    if (panelScriptId) {
-      const r2 = await chrome.runtime.sendMessage({ type: 'HFES_SAVE_MONITORS', scriptId: panelScriptId, monitors: panelMonitors });
-      if (!r2 || !r2.ok) { showToast('监控器保存失败: ' + (r2 && r2.error || ''), true); return; }
+    let ok = true;
+
+    // 域名匹配时 monitor 由设置页统一管理（只读），此处不回存
+    // 域名未匹配时没有规则组可存，monitors 也不需要回存
+    // monitors 的维护统一在设置页域名规则组里进行
+
+    // 2) 关联脚本 + 保存 triggers（只有选了脚本才有地方存）
+    if (panelScriptId && ok) {
+      const url = location.href;
+      const r1 = await chrome.runtime.sendMessage({
+        type: 'HFES_ASSOCIATE', url, scriptId: panelScriptId, urlMatch: 'exact'
+      });
+      if (!r1 || !r1.ok) { showToast('脚本关联失败: ' + (r1 && r1.error || ''), true); ok = false; }
+
+      // triggers 存脚本
+      const r2 = await chrome.runtime.sendMessage({
+        type: 'HFES_SAVE_TRIGGERS', scriptId: panelScriptId, triggers: panelTriggers
+      });
+      if (!r2 || !r2.ok) { showToast('触发器保存失败: ' + (r2 && r2.error || ''), true); ok = false; }
     }
-    showToast('已保存并应用');
-    // 3) 立即重新评估（触发 status / load_funscript / 应用新监控器）
-    await chrome.runtime.sendMessage({ type: 'HFES_REAPPLY', url });
+
+    if (ok) {
+      showToast('已保存并应用');
+      await chrome.runtime.sendMessage({ type: 'HFES_REAPPLY', url: location.href });
+    }
   }
 
   function closePanel() {
@@ -601,8 +858,7 @@
     if (!msg || !msg.type) return;
     switch (msg.type) {
       case 'HFES_APPLY':
-        applyMatched(msg.matched);
-        // 若面板开着，刷新面板数据
+        applyMatched(msg);
         if (host) openPanel().catch(e => console.warn('[HFES] 刷新面板失败:', e && e.message));
         sendResponse({ ok: true });
         break;

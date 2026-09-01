@@ -30,6 +30,34 @@ async function saveScripts(scripts) {
   await chrome.storage.local.set({ scripts });
 }
 
+// ================= 域名规则组 =================
+
+async function getDomainRuleGroups() {
+  const data = await chrome.storage.local.get('domainRuleGroups');
+  return Array.isArray(data.domainRuleGroups) ? data.domainRuleGroups : [];
+}
+
+async function saveDomainRuleGroups(groups) {
+  if (!Array.isArray(groups)) throw new Error('Invalid domainRuleGroups');
+  await chrome.storage.local.set({ domainRuleGroups: groups });
+}
+
+// URL 匹配域名规则组（支持通配符）
+function findDomainRuleGroupByDomain(ruleGroups, domain) {
+  for (const r of ruleGroups) {
+    if (!r.enabled || !r.domain || typeof r.domain !== 'string') continue;
+    try {
+      const pattern = '^' + r.domain.replace(/[.+?^${}()|[\\]\\\\]/g, '\\\\$&').replace(/\*/g, '.*') + '$';
+      if (new RegExp(pattern).test(domain)) {
+        return r;
+      }
+    } catch (e) {
+      console.warn('[HFES] 域名规则组正则错误:', e.message);
+    }
+  }
+  return null;
+}
+
 function findScriptByUrl(scripts, url) {
   if (!url) return null;
   // 先精确匹配
@@ -87,40 +115,48 @@ async function evaluateTab(tabId, url, force) {
     return;
   }
 
-  const [scripts, settings] = await Promise.all([getScripts(), getSettings()]);
-  const matched = findScriptByUrl(scripts, url);
+  let hostname;
+  try { hostname = new URL(url).hostname; } catch { hostname = ''; }
 
-  if (matched) {
+  const [scripts, settings, allRuleGroups] = await Promise.all([
+    getScripts(),
+    getSettings(),
+    getDomainRuleGroups()
+  ]);
+
+  // ===== 1) 域名优先：匹配域名规则组，拿其 monitors（只含 selector/observe，不含条件/eventId） =====
+  const matchedGroup = findDomainRuleGroupByDomain(allRuleGroups, hostname);
+  const monitors = matchedGroup && matchedGroup.enabled
+    ? (matchedGroup.monitors || []).filter(m => m.enabled !== false)
+    : [];
+
+  // ===== 2) URL 匹配：找到关联脚本，load_funscript + 取其 triggers =====
+  const matchedScript = findScriptByUrl(scripts, url);
+
+  if (matchedScript) {
     chrome.action.setBadgeText({ tabId, text: 'ON' });
     chrome.action.setBadgeBackgroundColor({ tabId, color: '#7c3aed' });
 
-    // 1) 先调用 status：设备在线且当前标题与脚本不一致时，重新 load_funscript
     try {
       console.log('[HFES] 调用 /status (tabId=%d)', tabId);
       const st = await howlApi('/status');
       if (st.ok) {
         let playerTitle = (st.body && st.body.player && st.body.player.title) || '';
-        const isSubTitle = playerTitle.indexOf(' # ');
-        if (isSubTitle > -1) {
-          const subTitle = playerTitle.substring(isSubTitle + 3);
-          console.log('[HFES] 去掉子标题', { tabId, playerTitle, subTitle });
-          playerTitle = playerTitle.substring(0, isSubTitle);
-        }
-        const scriptTitle = (matched.funscript && matched.funscript.metadata && matched.funscript.metadata.title) || '';
-        console.log('[HFES] status 结果', { tabId, playerTitle, scriptTitle, diff: playerTitle !== scriptTitle });
+        const hashIdx = playerTitle.indexOf(' # ');
+        if (hashIdx > -1) playerTitle = playerTitle.substring(0, hashIdx);
+
+        const scriptTitle = (matchedScript.funscript && matchedScript.funscript.metadata && matchedScript.funscript.metadata.title) || '';
         if (playerTitle !== scriptTitle) {
           console.log('[HFES] load_funscript（title 不匹配）', { tabId, scriptTitle });
           await howlApi('/load_funscript', {
             title: scriptTitle || 'Events Script',
             loop: false,
             play: false,
-            funscript: JSON.stringify(matched.funscript)
+            funscript: JSON.stringify(matchedScript.funscript)
           });
         } else {
           console.log('[HFES] 跳过 load_funscript（title 一致）', { tabId });
         }
-      } else {
-        console.warn('[HFES] status 失败：' + ((st && st.error) || 'unknown'));
       }
     } catch (e) {
       console.warn('[HFES] status/load_funscript 异常:', e.message);
@@ -129,16 +165,29 @@ async function evaluateTab(tabId, url, force) {
     chrome.action.setBadgeText({ tabId, text: '' });
   }
 
-  // 2) 通知内容脚本应用监控器（无论是否匹配，都同步状态）
+  // ===== 3) 触发器：来自匹配脚本的 triggers[]（引用 monitorId + match/value/eventId） =====
+  const triggers = matchedScript ? (matchedScript.triggers || []).filter(t => t.enabled !== false) : [];
+
+  console.log('[HFES] evaluateTab 结果', {
+    tabId, url, hostname,
+    domainGroup: matchedGroup ? matchedGroup.name : null,
+    scriptTitle: matchedScript ? (matchedScript.funscript?.metadata?.title || matchedScript.filename) : null,
+    monitors: monitors.length,
+    triggers: triggers.length
+  });
+
+  // ===== 4) 推送给内容脚本（monitors 和 triggers 分开） =====
   chrome.tabs.sendMessage(tabId, {
     type: 'HFES_APPLY',
-    url,
-    matched: matched ? {
-      id: matched.id,
-      title: (matched.funscript && matched.funscript.metadata && matched.funscript.metadata.title) || '',
-      events: ((matched.funscript && matched.funscript.events) || []).map(ev => ({ id: ev.id || '', title: (ev.metadata && ev.metadata.title) || '' })),
-      monitors: matched.monitors || []
+    domainRule: matchedGroup ? { id: matchedGroup.id, name: matchedGroup.name, domain: matchedGroup.domain, monitors: matchedGroup.monitors || [] } : null,
+    matchedScript: matchedScript ? {
+      id: matchedScript.id,
+      title: (matchedScript.funscript && matchedScript.funscript.metadata && matchedScript.funscript.metadata.title) || '',
+      triggers: matchedScript.triggers || [],
+      eventIds: ((matchedScript.funscript && matchedScript.funscript.events) || []).map(ev => ev.id || '').filter(Boolean)
     } : null,
+    monitors,
+    triggers,
     settings: { panelPosition: settings.panelPosition }
   }).catch(() => { /* 页面不支持内容脚本时忽略 */ });
 }
@@ -230,7 +279,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               urlMatch: s.urlMatch === 'prefix' ? 'prefix' : 'exact',
               title: (s.funscript && s.funscript.metadata && s.funscript.metadata.title) || '',
               eventIds: ((s.funscript && s.funscript.events) || []).map(ev => ev.id || ''),
-              monitors: s.monitors || []
+              triggers: s.triggers || []
             })),
             matchedId: matched ? matched.id : null
           });
@@ -256,12 +305,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
-        case 'HFES_SAVE_MONITORS': {
+        case 'HFES_SAVE_TRIGGERS': {
           const scripts = await getScripts();
           const target = scripts.find(s => s.id === msg.scriptId);
           if (!target) { sendResponse({ ok: false, error: '脚本不存在' }); break; }
-          target.monitors = Array.isArray(msg.monitors) ? msg.monitors : [];
+          target.triggers = Array.isArray(msg.triggers) ? msg.triggers : [];
           await saveScripts(scripts);
+          sendResponse({ ok: true });
+          break;
+        }
+
+        case 'HFES_SAVE_DOMAIN_RULE_MONITORS': {
+          const groups = await getDomainRuleGroups();
+          const target = groups.find(g => g.id === msg.ruleGroupId);
+          if (!target) { sendResponse({ ok: false, error: '域名规则组不存在' }); break; }
+          target.monitors = Array.isArray(msg.monitors) ? msg.monitors : [];
+          await saveDomainRuleGroups(groups);
           sendResponse({ ok: true });
           break;
         }
@@ -314,6 +373,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'HFES_OPEN_OPTIONS': {
           chrome.runtime.openOptionsPage();
           sendResponse({ ok: true });
+          break;
+        }
+
+        // HFES_GET_DOMAIN_RULES：获取指定 URL 匹配的域名规则组监控器
+        case 'HFES_GET_DOMAIN_RULES': {
+          const url = msg.url || (sender.tab && sender.tab.url) || '';
+          let hostname = '';
+          try { hostname = url ? new URL(url).hostname : ''; } catch {}
+          const groups = await getDomainRuleGroups();
+          const matched = findDomainRuleGroupByDomain(groups, hostname);
+          sendResponse(matched ? (matched.monitors || []) : []);
           break;
         }
 

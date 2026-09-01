@@ -45,6 +45,44 @@
   </div>
 
   <el-tabs v-model="mainTab" @tab-change="onMainTabChange">
+    <!-- ============ 监控器管理 ============ -->
+    <el-tab-pane label="监控器管理" name="domainRules">
+      <div class="toolbar">
+        <el-button type="primary" @click="addDomainRuleGroup">+ 添加规则组</button>
+        <span style="flex:1"></span>
+        <el-tag size="small" type="info">{{ domainRuleGroups.length }} 个规则组</el-tag>
+      </div>
+
+      <el-card v-if="domainRuleGroups.length" shadow="never">
+        <el-table :data="domainRuleGroups" border size="default">
+          <el-table-column label="名称" min-width="180">
+            <template #default="{ row }">
+              <div>{{ row.name }}</div>
+              <div style="font-size:11px;color:#909399;">域名：{{ row.domain || '(未配置)' }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="监控器数量" width="100">
+            <template #default="{ row }">{{ (row.monitors || []).length }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="200">
+            <template #default="{ $index, row }">
+              <el-button size="small" @click="editDomainRuleGroup($index)">编辑</el-button>
+              <el-button size="small" type="danger" @click="removeDomainRuleGroup($index)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+
+      <el-empty v-else description="暂无监控器组，点击「添加规则组」创建">
+        <div class="hint">按域名分组管理多个监控器（DOM 选择器 / URL），触发器在「脚本列表 → 关联」里配置</div>
+      </el-empty>
+    </el-tab-pane>
+
     <!-- ============ 脚本列表 ============ -->
     <el-tab-pane label="脚本列表" name="list">
       <div class="toolbar">
@@ -71,8 +109,8 @@
         <el-table-column label="事件" width="80">
           <template #default="{ row }">{{ eventCount(row) }}</template>
         </el-table-column>
-        <el-table-column label="监控器" width="80">
-          <template #default="{ row }">{{ (row.monitors || []).length }}</template>
+        <el-table-column label="触发器" width="80">
+          <template #default="{ row }">{{ (row.triggers || []).length }}</template>
         </el-table-column>
         <el-table-column label="操作" width="220">
           <template #default="{ row }">
@@ -284,6 +322,78 @@
     </el-tab-pane>
   </el-tabs>
 
+  <!-- 监控器组编辑对话框 -->
+  <el-dialog v-model="ruleGroupDialogVisible" :title="`监控器组配置${editingRuleGroupId ? ' (编辑)' : ''}`" width="760px">
+    <el-form label-width="110px">
+      <el-form-item label="名称" required>
+        <el-input v-model="editingRuleGroupName" placeholder="如：Example 网站监控"></el-input>
+      </el-form-item>
+      <el-form-item label="域名" required>
+        <el-input v-model="editingRuleGroupDomain" placeholder="输入域名（支持通配符 *，如 *.example.com）" show-word-limit maxlength="100"></el-input>
+        <div class="hint">提示：该域名规则会匹配所有符合此域名的 URL</div>
+      </el-form-item>
+      <el-form-item label="启用" required>
+        <el-checkbox v-model="editingRuleGroupEnabled">启用该规则组</el-checkbox>
+      </el-form-item>
+      
+      <!-- 监控器列表 -->
+      <el-divider content-position="left">监控器配置（DOM 元素）</el-divider>
+      
+      <!-- 监控器卡片列表 -->
+      <div v-if="editingRuleGroupMonitors.length > 0" style="width:100%;">
+        <div v-for="(m, i) in editingRuleGroupMonitors" :key="m.id" class="mon-card">
+          <el-row :gutter="8">
+            <el-col :span="5"><el-checkbox v-model="m.enabled">启用</el-checkbox></el-col>
+            <el-col :span="14">
+              <el-select v-model="m.type" @change="onMonTypeChange(m)">
+                <el-option label="监控 DOM 元素" value="dom"></el-option>
+              </el-select>
+            </el-col>
+            <el-col :span="5" style="text-align:right;">
+              <el-button size="small" type="danger" text @click="editingRuleGroupMonitors.splice(i, 1)">✕</el-button>
+            </el-col>
+          </el-row>
+          
+          <el-row :gutter="8">
+            <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">选择</el-col>
+            <el-col :span="19"><el-input v-model="m.selector" placeholder="CSS 选择器，如 .page-num"></el-input></el-col>
+          </el-row>
+          
+          <el-row :gutter="8">
+            <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">监控</el-col>
+            <el-col :span="8">
+              <el-select v-model="m.observe">
+                <el-option label="元素文本 (text)" value="text"></el-option>
+                <el-option label="元素属性 (attr)" value="attr"></el-option>
+              </el-select>
+            </el-col>
+          </el-row>
+          
+          <el-row :gutter="8" v-if="m.observe === 'attr'">
+            <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">属性名</el-col>
+            <el-col :span="14"><el-input v-model="m.attrName" placeholder="如 data-page / title"></el-input></el-col>
+          </el-row>
+          
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <el-button size="small" type="primary" plain @click="addDomainRuleGroupMonitor">+ 添加监控器</el-button>
+          </div>
+          
+          <div class="hint" style="margin-top:6px;font-size:10px;">监控器只定义观察目标（选择器 / URL），条件判断和触发在「关联脚本」的触发器里配置</div>
+        </div>
+      </div>
+      
+      <!-- 空状态和添加按钮 -->
+      <el-empty v-else description="暂无监控器" :image-style="{width: '150px', height: '150px'}"></el-empty>
+      <div style="text-align:center;margin-top:20px;">
+        <el-button type="primary" plain @click="addDomainRuleGroupMonitor">+ 添加监控器</el-button>
+      </div>
+    </el-form>
+    <template #footer>
+      <el-button @click="ruleGroupDialogVisible = false">取消</el-button>
+      <el-button type="primary" @click="saveDomainRuleGroup">保存</el-button>
+    </template>
+  </el-dialog>
+
   <!-- 关联对话框 -->
   <el-dialog v-model="assocVisible" title="关联脚本" width="760px">
     <el-form label-width="110px">
@@ -296,80 +406,49 @@
           <el-checkbox v-model="assocUrlPrefix" style="margin-top:6px;">前缀匹配（URL 翻页网站勾选：访问地址以此 URL 开头即命中）</el-checkbox>
         </div>
       </el-form-item>
-      <el-form-item label="监控触发器">
+      <el-form-item label="触发器">
         <div style="width:100%;">
-          <div v-for="(m, i) in assocMonitors" :key="m.id" class="mon-card">
+          <div v-if="allMonitorsForTrigger.length === 0" style="font-size:12px;color:#E6A23C;padding:8px 12px;background:#FDF6EC;border-radius:4px;margin-bottom:8px;">
+            ⚠️ 还没有可用的监控器。请先在左侧「监控器管理」中添加规则组并配置监控器。
+          </div>
+          <div v-for="(t, i) in assocTriggers" :key="t.id" class="mon-card">
             <el-row :gutter="8">
-              <el-col :span="5"><el-checkbox v-model="m.enabled">启用</el-checkbox></el-col>
+              <el-col :span="5"><el-checkbox v-model="t.enabled">启用</el-checkbox></el-col>
               <el-col :span="14">
-                <el-select v-model="m.type" @change="onMonTypeChange(m)">
-                  <el-option label="监控 DOM 元素" value="dom"></el-option>
-                  <el-option label="监控页面 URL" value="url"></el-option>
+                <el-select v-model="t.monitorId" placeholder="选择监控器" filterable>
+                  <el-option v-for="m in allMonitorsForTrigger" :key="m.id" :value="m.id" :label="`[${m._groupName}] ${(m.selector || m.observe || '').slice(0,40)}`"></el-option>
                 </el-select>
               </el-col>
               <el-col :span="5" style="text-align:right;">
-                <el-button size="small" type="danger" text @click="assocMonitors.splice(i, 1)">✕</el-button>
+                <el-button size="small" type="danger" text @click="assocTriggers.splice(i, 1)">✕</el-button>
               </el-col>
-            </el-row>
-            <el-row :gutter="8" v-if="(m.type || 'dom') === 'dom'">
-              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">选择</el-col>
-              <el-col :span="19"><el-input v-model="m.selector" placeholder="CSS 选择器，如 .page-num"></el-input></el-col>
-            </el-row>
-            <el-row :gutter="8" v-if="(m.type || 'dom') === 'dom'">
-              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">监控</el-col>
-              <el-col :span="8">
-                <el-select v-model="m.observe">
-                  <el-option label="文本 text" value="text"></el-option>
-                  <el-option label="属性 attr" value="attr"></el-option>
-                </el-select>
-              </el-col>
-            </el-row>
-            <el-row :gutter="8" v-if="(m.type || 'dom') === 'dom' && m.observe === 'attr'">
-              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">属性名</el-col>
-              <el-col :span="14"><el-input v-model="m.attrName" placeholder="如 data-page / title"></el-input></el-col>
-            </el-row>
-            <el-row :gutter="8" v-if="m.type === 'url'">
-              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">监控</el-col>
-              <el-col :span="10">
-                <el-select v-model="m.observe">
-                  <el-option label="整个 URL" value="full"></el-option>
-                  <el-option label="路径 (pathname)" value="path"></el-option>
-                  <el-option label="查询参数 (?a=)" value="query"></el-option>
-                  <el-option label="哈希 (#...)" value="hash"></el-option>
-                </el-select>
-              </el-col>
-            </el-row>
-            <el-row :gutter="8" v-if="m.type === 'url' && m.observe === 'query'">
-              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">参数名</el-col>
-              <el-col :span="14"><el-input v-model="m.attrName" placeholder="如 page / id"></el-input></el-col>
             </el-row>
             <el-row :gutter="8">
               <el-col :span="4">
-                <el-select v-model="m.match">
+                <el-select v-model="t.match">
                   <el-option label="值等于" value="equals"></el-option>
                   <el-option label="值不等于" value="notEquals"></el-option>
-                  <el-option label="包含 (indexOf)" value="contains"></el-option>
+                  <el-option label="包含" value="contains"></el-option>
                   <el-option label="不包含" value="notContains"></el-option>
                   <el-option label="开头为" value="startsWith"></el-option>
                   <el-option label="结尾为" value="endsWith"></el-option>
                   <el-option label="正则匹配" value="regex"></el-option>
                 </el-select>
               </el-col>
-              <el-col :span="7"><el-input v-model="m.value" placeholder="期望值，如 3"></el-input></el-col>
-              <el-col :span="3" style="text-align:center;font-size:12px;color:#909399;line-height:32px;">触发事件</el-col>
-              <el-col :span="10">
-                <el-select v-model="m.eventId" placeholder="选择事件 ID">
+              <el-col :span="8"><el-input v-model="t.value" placeholder="期望值，如 3"></el-input></el-col>
+              <el-col :span="4" style="text-align:center;font-size:12px;color:#909399;line-height:32px;">触发事件</el-col>
+              <el-col :span="8">
+                <el-select v-model="t.eventId" placeholder="选择事件 ID">
                   <el-option v-for="id in assocEventIds" :key="id" :label="id" :value="id"></el-option>
                 </el-select>
               </el-col>
             </el-row>
           </div>
           <div style="display:flex;gap:8px;margin-top:6px;">
-            <el-button size="small" type="primary" plain @click="addAssocMonitor">+ 添加</el-button>
+            <el-button size="small" type="primary" plain @click="addAssocTrigger">+ 添加触发器</el-button>
           </div>
           <div class="hint" style="margin-top:6px;">
-            监控器分两类：DOM 元素（文本/属性）与 页面 URL（整个地址/路径/查询参数/哈希）。值满足条件且发生变化时，调用该脚本对应事件 ID 到 Howl 的 /event 接口（值离开条件后再次进入会重新触发）。
-            正则为部分匹配（RegExp.test），需要完全匹配请自行加 ^ 和 $ 锚点。页面内的关联面板中有「测试」按钮可即时验证条件是否命中。
+            触发器引用监控器管理里的监控器，当监控值变化并满足条件时，触发对应事件。正则为部分匹配（RegExp.test）。
           </div>
         </div>
       </el-form-item>
