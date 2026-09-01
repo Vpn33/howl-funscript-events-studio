@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Howl Funscript Events Studio</title>
+<!--
+  主页面壳（右键插件图标 → Settings 打开）
+  真正的 Vue 应用在 sandbox.html：MV3 扩展页面 CSP 禁止 unsafe-eval（Vue 模板编译需要），
+  因此应用运行在沙箱页中；本壳通过 postMessage 桥接 chrome.storage / chrome.runtime。
+-->
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f5f7fa; }
+  iframe { display: block; width: 100%; height: 100%; border: 0; }
+</style>
+</head>
+<body>
+<iframe id="appFrame" src="sandbox.html" title="HFES App"></iframe>
+<script src="broker.js"></script>
+</body>
+</html>

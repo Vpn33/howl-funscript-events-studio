@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Howl Funscript Events Studio</title>
+<!--
+  沙箱应用页（由 options.html 壳页面通过 iframe 加载）
+  功能：Funscript 脚本库管理（列表/导入/编辑/关联/删除） + 完整波形编辑器 + 全局设置
+  沙箱 CSP 允许 unsafe-eval（Vue 运行时模板编译需要）；chrome.* API 通过 postMessage 桥接（壳页面 broker.js）
+  输出格式与 Howl 的 Funscript.kt 解析格式一致（events + actions）
+-->
+<link rel="stylesheet" href="lib/element-plus.css">
+<script src="lib/vue.global.prod.js"></script>
+<script src="lib/element-plus.min.js"></script>
+<style>
+  body { margin: 0; background: #f5f7fa; font-family: "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; min-width: 980px; }
+  #app { max-width: 1180px; margin: 0 auto; padding: 16px; }
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .toolbar h2 { margin: 0 12px 0 0; font-size: 18px; }
+  .canvas-wrap { position: relative; }
+  canvas.wave { width: 100%; height: 300px; display: block; border: 1px solid #dcdfe6; border-radius: 4px; background: #fafafa; touch-action: none; cursor: crosshair; }
+  .hint { color: #909399; font-size: 12px; margin: 6px 0 12px; }
+  .event-header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .json-box { width: 100%; }
+  .mt8 { margin-top: 8px; }
+  .mb8 { margin-bottom: 8px; }
+  .wavegen { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; padding: 8px 10px; background: #f0f2f5; border-radius: 4px; }
+  .wavegen .wg-label { font-size: 12px; color: #606266; }
+  .mon-card { border: 1px solid #e4e7ed; border-radius: 6px; padding: 10px; margin-bottom: 8px; background: #fafbfc; }
+  .mon-card .el-row { margin-bottom: 6px; }
+  .mon-card .el-row:last-child { margin-bottom: 0; }
+  .url-cell { font-size: 12px; color: #409eff; word-break: break-all; }
+  .url-empty { color: #c0c4cc; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="toolbar">
+    <h2>Howl Funscript Events Studio</h2>
+    <el-tag type="info" effect="plain">v1.0</el-tag>
+    <span style="flex:1"></span>
+    <el-input v-model="settings.host" style="width:230px" placeholder="Howl 地址 http://127.0.0.1:9080"></el-input>
+    <el-input v-model="settings.apiKey" style="width:150px" placeholder="API Key" show-password></el-input>
+    <el-button @click="testConnection">测试连接</el-button>
+  </div>
+
+  <el-tabs v-model="mainTab" @tab-change="onMainTabChange">
+    <!-- ============ 脚本列表 ============ -->
+    <el-tab-pane label="脚本列表" name="list">
+      <div class="toolbar">
+        <el-button type="primary" @click="triggerImportFile">导入 .funscript 文件</el-button>
+        <input ref="importFileRef" type="file" accept=".funscript,.json" multiple style="display:none" @change="onImportFiles">
+        <el-button @click="createNewScript">新建脚本</el-button>
+        <span style="flex:1"></span>
+        <el-tag size="small" type="info">{{ scripts.length }} 个脚本</el-tag>
+      </div>
+
+      <el-table :data="scripts" border size="default" empty-text="暂无脚本，请导入 .funscript 文件或新建">
+        <el-table-column label="标题" min-width="160">
+          <template #default="{ row }">
+            <div>{{ scriptTitle(row) }}</div>
+            <div style="font-size:11px;color:#909399;">{{ row.filename || '未命名文件' }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="关联 URL" min-width="240">
+          <template #default="{ row }">
+            <span v-if="row.url" class="url-cell">{{ row.url }}<el-tag v-if="row.urlMatch === 'prefix'" size="mini" style="margin-left:6px;">前缀</el-tag></span>
+            <span v-else class="url-empty">未关联</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="事件" width="80">
+          <template #default="{ row }">{{ eventCount(row) }}</template>
+        </el-table-column>
+        <el-table-column label="监控器" width="80">
+          <template #default="{ row }">{{ (row.monitors || []).length }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="220">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" @click="editScript(row)">编辑</el-button>
+            <el-button size="small" type="success" @click="openAssociate(row)">关联</el-button>
+            <el-button size="small" type="danger" @click="removeScript(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="hint">
+        页面跳转时：插件按 URL 精确匹配已关联的脚本 → 调用 /status，若设备当前标题与脚本标题不一致则自动 /load_funscript（仅加载不播放）；
+        DOM 监控器在元素 text/属性值满足条件时调用 /event 触发对应事件。
+      </div>
+    </el-tab-pane>
+
+    <!-- ============ 编辑器 ============ -->
+    <el-tab-pane :label="editingId ? '编辑器 (编辑中)' : '编辑器'" name="editor">
+      <div class="toolbar">
+        <el-tag v-if="editingId" type="warning">{{ editingName }} - 编辑中</el-tag>
+        <el-button @click="loadSample">加载示例</el-button>
+        <el-button @click="importDialogVisible = true">导入 JSON</el-button>
+        <el-button type="primary" @click="saveToLibrary">{{ editingId ? '保存到脚本库' : '保存为新脚本' }}</el-button>
+        <el-button v-if="editingId" @click="exitEditing">退出编辑</el-button>
+        <el-button @click="copyJson">复制 JSON</el-button>
+        <el-button @click="downloadJson">下载 .funscript</el-button>
+      </div>
+
+      <!-- 推送到设备 -->
+      <el-card shadow="never" class="mb8">
+        <template #header><b>推送到 Howl 设备 (load_funscript API)</b></template>
+        <div class="toolbar" style="margin-bottom:0;">
+          <el-checkbox v-model="settings.pushPlay">推送后自动播放</el-checkbox>
+          <el-button type="success" @click="pushToDevice">推送到设备</el-button>
+          <span class="hint" style="margin:0;">使用上方全局设置的地址与 API Key</span>
+        </div>
+      </el-card>
+
+      <!-- 事件 -->
+      <el-card shadow="never" class="mb8">
+        <template #header>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <b>事件列表</b>
+            <el-tag size="small">{{ events.length }} 个事件 / {{ totalActions }} 个动作</el-tag>
+            <span style="flex:1"></span>
+            <el-button size="small" type="primary" @click="addEvent">新增事件</el-button>
+          </div>
+        </template>
+
+        <div v-if="!events.length" style="color:#909399;padding:24px;text-align:center;">
+          还没有事件，点击「新增事件」或「加载示例」开始
+        </div>
+
+        <el-tabs v-if="events.length" v-model="activeName" type="card">
+          <el-tab-pane v-for="(ev, i) in events" :key="i" :name="String(i)">
+            <template #label>{{ ev.id || ('page' + (i+1)) }} ({{ ev.actions.length }})</template>
+
+            <div class="event-header">
+              <el-input v-model="ev.id" style="width:140px" placeholder="id (page1)">
+                <template #prepend>ID</template>
+              </el-input>
+              <el-input v-model="ev.title" style="width:160px" placeholder="事件标题">
+                <template #prepend>标题</template>
+              </el-input>
+              <el-checkbox v-model="ev.loop">循环 (loop)</el-checkbox>
+              <el-tag size="small" type="info">时长 {{ fmtDuration(eventMaxAt(ev)) }}</el-tag>
+              <span style="flex:1"></span>
+              <el-button size="small" @click="sortDedupe(i)">排序去重</el-button>
+              <el-button size="small" @click="invert(i)">反转波形</el-button>
+              <el-button size="small" @click="duplicateEvent(i)">复制事件</el-button>
+              <el-button size="small" type="danger" @click="removeEvent(i)">删除</el-button>
+            </div>
+
+            <!-- 波形画布：左键点/拖编辑，右键删除点 -->
+            <div class="canvas-wrap">
+              <canvas class="wave" ref="canvasRef"
+                      @pointerdown="onPointerDown"
+                      @pointermove="onPointerMove"
+                      @pointerup="onPointerUp"
+                      @pointerleave="onPointerUp"
+                      @contextmenu.prevent="onContextMenu"></canvas>
+              <el-button size="small" style="position:absolute;right:8px;top:8px;" @click="togglePlay">
+                {{ playing ? '停止' : '预览播放' }}
+              </el-button>
+            </div>
+            <div class="hint">左键点击空白处添加动作点 / 拖动已有点调整 / 右键点击点删除 / 右键拖拽框选批量删除；横轴为时间(秒)，纵轴为位置(0-100)</div>
+
+            <!-- 波形生成器：内置波形 / .pulse 转换 -->
+            <div class="wavegen">
+              <span class="wg-label">内置波形</span>
+              <el-select v-model="gen.shape" style="width:200px" size="small">
+                <el-option v-for="s in waveShapes" :key="s.value" :label="s.label" :value="s.value"></el-option>
+              </el-select>
+              <el-checkbox v-model="gen.fromEnd" size="small">从末尾开始</el-checkbox>
+              <el-input-number v-show="!gen.fromEnd" v-model="gen.start" :min="0" :step="500" size="small"
+                               :controls="false" style="width:90px" title="起始时间 (ms)"></el-input-number>
+              <span class="wg-label">时长ms</span>
+              <el-input-number v-model="gen.duration" :min="100" :step="500" size="small" :controls="false" style="width:90px"></el-input-number>
+              <span class="wg-label">周期ms</span>
+              <el-input-number v-model="gen.period" :min="50" :step="100" size="small" :controls="false" style="width:80px"></el-input-number>
+              <span class="wg-label">位置min</span>
+              <el-input-number v-model="gen.min" :min="0" :max="100" size="small" :controls="false" style="width:70px"></el-input-number>
+              <span class="wg-label">max</span>
+              <el-input-number v-model="gen.max" :min="0" :max="100" size="small" :controls="false" style="width:70px"></el-input-number>
+              <el-button type="primary" size="small" @click="appendWave">生成并添加</el-button>
+              <el-divider direction="vertical"></el-divider>
+              <el-button size="small" type="success" plain @click="pulseDialogVisible = true">导入 .pulse 文件</el-button>
+            </div>
+
+            <!-- 动作表 -->
+            <el-table :data="activeEvent ? activeEvent.actions : []" size="small" max-height="260" border
+                      ref="actionsTableRef" @selection-change="onSelectionChange">
+              <el-table-column type="selection" width="40"></el-table-column>
+              <el-table-column type="index" label="#" width="50"></el-table-column>
+              <el-table-column label="时间 at (ms)" width="200">
+                <template #default="{ row }">
+                  <el-input-number v-model="row.at" :min="0" :step="100" :controls="false" size="small"
+                                   style="width:100%" @change="sortDedupe(activeIndex)"></el-input-number>
+                </template>
+              </el-table-column>
+              <el-table-column label="位置 pos (0-100)" width="200">
+                <template #default="{ row }">
+                  <el-input-number v-model="row.pos" :min="0" :max="100" :step="1" :controls="false" size="small"
+                                   style="width:100%"></el-input-number>
+                </template>
+              </el-table-column>
+              <el-table-column label="时间" width="120">
+                <template #default="{ row }">{{ (row.at / 1000).toFixed(3) }}s</template>
+              </el-table-column>
+              <el-table-column>
+                <template #default="{ $index }">
+                  <el-button size="small" type="danger" text @click="removeAction($index)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="toolbar" style="margin-top:8px;gap:6px;">
+              <el-button size="small" @click="addAction">添加动作</el-button>
+              <el-button size="small" type="danger" :disabled="!selectedActions.length"
+                         @click="deleteSelected">删除选中 ({{ selectedActions.length }})</el-button>
+              <el-button size="small" type="danger" plain :disabled="!activeEvent || !activeEvent.actions.length"
+                         @click="clearAllActions">清空全部</el-button>
+              <el-divider direction="vertical"></el-divider>
+              <span class="wg-label">按时间删除</span>
+              <el-input-number v-model="rangeDelStart" :min="0" :step="100" size="small" :controls="false" style="width:90px"></el-input-number>
+              <span class="wg-label">~</span>
+              <el-input-number v-model="rangeDelEnd" :min="0" :step="100" size="small" :controls="false" style="width:90px"></el-input-number>
+              <el-button size="small" type="warning" plain :disabled="rangeDelStart == null || rangeDelEnd == null || rangeDelStart > rangeDelEnd"
+                         @click="deleteByRange">删除区间</el-button>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </el-card>
+
+      <!-- 元数据 -->
+      <el-card shadow="never" class="mb8">
+        <template #header><b>脚本元数据</b></template>
+        <el-form label-width="90px" size="default">
+          <el-row :gutter="12">
+            <el-col :span="8"><el-form-item label="标题"><el-input v-model="meta.title" placeholder="请填写标题（与设备 status.title 比对用）"></el-input></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="作者"><el-input v-model="meta.topic_creator" placeholder="请填写作者"></el-input></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="日期"><el-input v-model="meta.topic_date" placeholder="2022-09-12"></el-input></el-form-item></el-col>
+            <el-col :span="6"><el-form-item label="版本号"><el-input v-model="version" placeholder="1.0"></el-input></el-form-item></el-col>
+            <el-col :span="12"><el-form-item label="话题链接"><el-input v-model="meta.topic_url" placeholder="https://..."></el-input></el-form-item></el-col>
+            <el-col :span="6"><el-form-item label="标签"><el-input v-model="meta.topic_tags" placeholder="逗号分隔: pov,blowjob"></el-input></el-form-item></el-col>
+          </el-row>
+        </el-form>
+      </el-card>
+
+      <!-- JSON 输出 -->
+      <el-card shadow="never">
+        <template #header><b>JSON 输出</b></template>
+        <el-input type="textarea" :rows="10" class="json-box" :model-value="funscriptJson" readonly></el-input>
+      </el-card>
+    </el-tab-pane>
+
+    <!-- ============ 设置 ============ -->
+    <el-tab-pane label="设置" name="settings">
+      <el-card shadow="never" class="mb8">
+        <template #header><b>Howl 设备</b></template>
+        <el-form label-width="140px" style="max-width:640px;">
+          <el-form-item label="设备地址">
+            <el-input v-model="settings.host" placeholder="http://127.0.0.1:9080 或 http://192.168.1.100:4695"></el-input>
+          </el-form-item>
+          <el-form-item label="API Key">
+            <el-input v-model="settings.apiKey" placeholder="应用「设置 → 远程控制」中查看" show-password></el-input>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="testConnection">测试连接</el-button>
+            <el-tag v-if="testResult" :type="testResult.ok ? 'success' : 'danger'" style="margin-left:10px;">
+              {{ testResult.text }}
+            </el-tag>
+          </el-form-item>
+        </el-form>
+      </el-card>
+      <el-card shadow="never">
+        <template #header><b>关联面板</b></template>
+        <el-form label-width="140px" style="max-width:640px;">
+          <el-form-item label="默认弹出位置">
+            <el-select v-model="settings.panelPosition" style="width:200px;">
+              <el-option label="左侧" value="left"></el-option>
+              <el-option label="右侧" value="right"></el-option>
+              <el-option label="底部" value="bottom"></el-option>
+            </el-select>
+          </el-form-item>
+          <el-form-item>
+            <span class="hint" style="margin:0;">右键浏览器工具栏中的插件图标可打开本页面(Settings)或在当前页面弹出关联面板(关联)。面板内的位置按钮会同步修改此默认值。</span>
+          </el-form-item>
+        </el-form>
+      </el-card>
+    </el-tab-pane>
+  </el-tabs>
+
+  <!-- 关联对话框 -->
+  <el-dialog v-model="assocVisible" title="关联脚本" width="760px">
+    <el-form label-width="110px">
+      <el-form-item label="脚本">
+        <el-tag type="warning">{{ assocScriptName }}</el-tag>
+      </el-form-item>
+      <el-form-item label="关联 URL">
+        <div style="width:100%;">
+          <el-input v-model="assocUrl" placeholder="如 https://example.com/gallery/123（留空表示清除关联）"></el-input>
+          <el-checkbox v-model="assocUrlPrefix" style="margin-top:6px;">前缀匹配（URL 翻页网站勾选：访问地址以此 URL 开头即命中）</el-checkbox>
+        </div>
+      </el-form-item>
+      <el-form-item label="监控触发器">
+        <div style="width:100%;">
+          <div v-for="(m, i) in assocMonitors" :key="m.id" class="mon-card">
+            <el-row :gutter="8">
+              <el-col :span="5"><el-checkbox v-model="m.enabled">启用</el-checkbox></el-col>
+              <el-col :span="14">
+                <el-select v-model="m.type" @change="onMonTypeChange(m)">
+                  <el-option label="监控 DOM 元素" value="dom"></el-option>
+                  <el-option label="监控页面 URL" value="url"></el-option>
+                </el-select>
+              </el-col>
+              <el-col :span="5" style="text-align:right;">
+                <el-button size="small" type="danger" text @click="assocMonitors.splice(i, 1)">✕</el-button>
+              </el-col>
+            </el-row>
+            <el-row :gutter="8" v-if="(m.type || 'dom') === 'dom'">
+              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">选择</el-col>
+              <el-col :span="19"><el-input v-model="m.selector" placeholder="CSS 选择器，如 .page-num"></el-input></el-col>
+            </el-row>
+            <el-row :gutter="8" v-if="(m.type || 'dom') === 'dom'">
+              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">监控</el-col>
+              <el-col :span="8">
+                <el-select v-model="m.observe">
+                  <el-option label="文本 text" value="text"></el-option>
+                  <el-option label="属性 attr" value="attr"></el-option>
+                </el-select>
+              </el-col>
+            </el-row>
+            <el-row :gutter="8" v-if="(m.type || 'dom') === 'dom' && m.observe === 'attr'">
+              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">属性名</el-col>
+              <el-col :span="14"><el-input v-model="m.attrName" placeholder="如 data-page / title"></el-input></el-col>
+            </el-row>
+            <el-row :gutter="8" v-if="m.type === 'url'">
+              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">监控</el-col>
+              <el-col :span="10">
+                <el-select v-model="m.observe">
+                  <el-option label="整个 URL" value="full"></el-option>
+                  <el-option label="路径 (pathname)" value="path"></el-option>
+                  <el-option label="查询参数 (?a=)" value="query"></el-option>
+                  <el-option label="哈希 (#...)" value="hash"></el-option>
+                </el-select>
+              </el-col>
+            </el-row>
+            <el-row :gutter="8" v-if="m.type === 'url' && m.observe === 'query'">
+              <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">参数名</el-col>
+              <el-col :span="14"><el-input v-model="m.attrName" placeholder="如 page / id"></el-input></el-col>
+            </el-row>
+            <el-row :gutter="8">
+              <el-col :span="4">
+                <el-select v-model="m.match">
+                  <el-option label="值等于" value="equals"></el-option>
+                  <el-option label="值不等于" value="notEquals"></el-option>
+                  <el-option label="包含 (indexOf)" value="contains"></el-option>
+                  <el-option label="不包含" value="notContains"></el-option>
+                  <el-option label="开头为" value="startsWith"></el-option>
+                  <el-option label="结尾为" value="endsWith"></el-option>
+                  <el-option label="正则匹配" value="regex"></el-option>
+                </el-select>
+              </el-col>
+              <el-col :span="7"><el-input v-model="m.value" placeholder="期望值，如 3"></el-input></el-col>
+              <el-col :span="3" style="text-align:center;font-size:12px;color:#909399;line-height:32px;">触发事件</el-col>
+              <el-col :span="10">
+                <el-select v-model="m.eventId" placeholder="选择事件 ID">
+                  <el-option v-for="id in assocEventIds" :key="id" :label="id" :value="id"></el-option>
+                </el-select>
+              </el-col>
+            </el-row>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <el-button size="small" type="primary" plain @click="addAssocMonitor">+ 添加</el-button>
+          </div>
+          <div class="hint" style="margin-top:6px;">
+            监控器分两类：DOM 元素（文本/属性）与 页面 URL（整个地址/路径/查询参数/哈希）。值满足条件且发生变化时，调用该脚本对应事件 ID 到 Howl 的 /event 接口（值离开条件后再次进入会重新触发）。
+            正则为部分匹配（RegExp.test），需要完全匹配请自行加 ^ 和 $ 锚点。页面内的关联面板中有「测试」按钮可即时验证条件是否命中。
+          </div>
+        </div>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="assocVisible = false">取消</el-button>
+      <el-button type="primary" @click="saveAssociate">保存</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 导入 JSON 对话框 -->
+  <el-dialog v-model="importDialogVisible" title="导入 Funscript JSON" width="640px">
+    <el-input type="textarea" :rows="12" v-model="importText" placeholder="粘贴 funscript JSON 内容"></el-input>
+    <template #footer>
+      <el-button @click="importDialogVisible = false">取消</el-button>
+      <el-button type="primary" @click="doImport">导入（仅进入编辑器）</el-button>
+      <el-button type="success" @click="doImportAndSave">导入并保存到脚本库</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- .pulse 导入对话框 -->
+  <el-dialog v-model="pulseDialogVisible" title="导入 .pulse 波形文件 (Dungeonlab+pulse)" width="680px">
+    <div class="toolbar" style="margin-bottom:8px;">
+      <el-button size="small" @click="triggerPulseFile">选择文件</el-button>
+      <input ref="pulseFileRef" type="file" accept=".pulse,.txt" style="display:none" @change="onPulseFile">
+      <el-checkbox v-model="pulseBreakFlat" size="small">自动打破平段</el-checkbox>
+      <span class="wg-label">扰动 ±</span>
+      <el-input-number v-model="pulseVariation" :min="1" :max="100" size="small" :controls="false" style="width:60px"></el-input-number>
+    </div>
+    <div class="hint" style="margin-bottom:4px;">强度(0-100)→位置pos；每个元 = 100/rate ms；频率信息无法映射到 funscript，将被忽略。
+      开启"打破平段"后，连续 ≥3 个 pos 相同的区域会注入 ±{{ pulseVariation }} 交替扰动，确保 Funscript 有速度输出。</div>
+    <el-input type="textarea" :rows="10" v-model="pulseText"
+              placeholder="粘贴 .pulse 文件内容，例如: Dungeonlab+pulse:0,1,16=59,20,39,1,1/100.00-1,100.00-1+section+..."></el-input>
+    <template #footer>
+      <el-button @click="pulseDialogVisible = false">取消</el-button>
+      <el-button type="primary" @click="doImportPulse">转换并追加到当前事件</el-button>
+    </template>
+  </el-dialog>
+</div>
+
+<script src="options.js"></script>
+</body>
+</html>
