@@ -452,7 +452,7 @@
                   <el-option label="正则匹配" value="regex"></el-option>
                 </el-select>
               </el-col>
-              <el-col :span="8"><el-input v-model="t.value" placeholder="期望值，如 3"></el-input></el-col>
+              <el-col :span="8"><el-input v-model="t.value" placeholder="期望值，多个用 | 分隔" title="多个期望值可用竖线 | 分隔，任一匹配即触发（正则模式 | 为 or）"></el-input></el-col>
               <el-col :span="4" style="text-align:center;font-size:12px;color:#909399;line-height:32px;">触发事件</el-col>
               <el-col :span="8">
                 <el-select v-model="t.eventId" placeholder="选择事件 ID">
@@ -466,6 +466,8 @@
           </div>
           <div class="hint" style="margin-top:6px;">
             触发器引用监控器管理里的监控器，当监控值变化并满足条件时，触发对应事件。正则为部分匹配（RegExp.test）。
+            「当值」支持多个期望值：用竖线 | 分隔（如 <code>A|B|C</code>），正向条件（等于/包含/开头/结尾）任一匹配即触发，反向条件（不等于/不包含）全部不匹配才触发；正则模式下 | 即正则 or。
+            <b>同一监控器有多个触发器同时命中时，只触发列表中最后（最新添加）的那个</b>，请把更精确的规则排在后面。
           </div>
         </div>
       </el-form-item>

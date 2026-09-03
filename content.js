@@ -47,24 +47,33 @@
 
   // 条件判定（带错误详情，供「测试」按钮展示）
   // equals/notEquals/contains/notContains/startsWith/endsWith/regex
+  // 多值：value 可用换行或竖线 | 分隔多个期望值；
+  //   正向条件（equals/contains/startsWith/endsWith）任一命中即匹配；
+  //   反向条件（notEquals/notContains）全部不命中才匹配；
+  //   regex 不拆分（竖线在正则中本身就是 or）。
   function isMatchDetailed(m, v) {
     if (v == null) return { ok: false, error: '未读到值' };
-    const expect = m.value || '';
-    try {
-      switch (m.match) {
-        case 'notEquals': return { ok: v !== expect };
-        case 'notContains': return { ok: v.indexOf(expect) < 0 };
-        case 'startsWith': return { ok: v.startsWith(expect) };
-        case 'endsWith': return { ok: v.endsWith(expect) };
-        case 'regex':
-          if (!expect) return { ok: false, error: '正则为空' };
-          return { ok: new RegExp(expect).test(v) };
-        case 'contains': return { ok: v.indexOf(expect) >= 0 };
-        default: return { ok: v === expect }; // equals
-      }
-    } catch (e) {
-      return { ok: false, error: '正则无效: ' + e.message };
+    const raw = m.value || '';
+    if (m.match === 'regex') {
+      if (!raw) return { ok: false, error: '正则为空' };
+      try { return { ok: new RegExp(raw).test(v) }; }
+      catch (e) { return { ok: false, error: '正则无效: ' + e.message }; }
     }
+    const expects = raw.split(/[\n|]/).map(s => s.trim()).filter(Boolean);
+    if (!expects.length) return { ok: false, error: '匹配值为空' };
+    const testOne = (expect) => {
+      switch (m.match) {
+        case 'notEquals': return v !== expect;
+        case 'notContains': return v.indexOf(expect) < 0;
+        case 'startsWith': return v.startsWith(expect);
+        case 'endsWith': return v.endsWith(expect);
+        case 'contains': return v.indexOf(expect) >= 0;
+        default: return v === expect; // equals
+      }
+    };
+    // 反向条件：所有期望值都不满足才算匹配；正向条件：任一满足即匹配
+    const negative = m.match === 'notEquals' || m.match === 'notContains';
+    return { ok: negative ? expects.every(testOne) : expects.some(testOne) };
   }
 
   function isMatch(m, v) {
@@ -157,14 +166,16 @@
       const prev = lastValues.get(monitor.id);
       if (v != null && v !== prev) {
         lastValues.set(monitor.id, v);
-        // 扫所有 triggers：引用此 monitorId 的，条件匹配就触发
+        // 同一监控器可能有多个触发器同时命中（例如通用正则 (\d)+/ 与精确正则 1/），
+        // 遍历收集所有命中项，只触发列表中最后一个（最新定义的），
+        // 避免通用规则与精确规则无序重复触发同一/不同事件。
+        let lastMatched = null;
         for (const trigger of activeTriggers) {
           if (trigger.enabled === false) continue;
           if (trigger.monitorId !== monitor.id) continue;
-          if (isMatch(trigger, v)) {
-            triggerEvent(trigger.eventId, monitor);
-          }
+          if (isMatch(trigger, v)) lastMatched = trigger;
         }
+        if (lastMatched) triggerEvent(lastMatched.eventId, monitor);
       } else if (prev !== undefined && v == null) {
         // 元素消失 / URL 读不到值 → 重置，以便下次出现时重新判断
         lastValues.delete(monitor.id);
@@ -302,8 +313,11 @@
                  margin-top: 6px; cursor: pointer; }
       .chkline input { width: auto; accent-color: #7c5cff; cursor: pointer; }
       .sec-head { display: flex; align-items: center; margin-bottom: 6px; }
-      .sec-head .add { margin-left: auto; background: #7c3aed; color: #fff; border: none;
-                       border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+      .add { background: #7c3aed; color: #fff; border: none;
+             border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+      .add:hover { background: #6d28d9; }
+      .sec-head .add { margin-left: auto; }
+      .add-block { width: 100%; margin-top: 8px; padding: 8px; font-size: 13px; }
       .hint { font-size: 11px; color: #6d6d80; margin-top: 4px; line-height: 1.5; }
       .foot { padding: 10px 12px; border-top: 1px solid #3a3a4a; display: flex; gap: 8px; }
       .foot button { flex: 1; padding: 8px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
@@ -557,8 +571,9 @@
     const r4 = el('div', 'row');
     r4.appendChild(el('span', 'lbl', '当值'));
     const val = document.createElement('input');
-    val.type = 'text'; val.value = t.value || ''; val.placeholder = '期望值';
+    val.type = 'text'; val.value = t.value || ''; val.placeholder = '期望值，多个用 | 分隔';
     val.className = 'grow';
+    val.title = '多个期望值可用竖线 | 或换行分隔，任一匹配即触发（正则模式下 | 为正则 or）';
     val.oninput = () => { t.value = val.value; };
     r4.appendChild(val);
     card.appendChild(r4);
@@ -829,9 +844,12 @@
               <button class="add" id="addTrig">+ 添加触发器</button>
             </div>
             <div id="trigList"></div>
+            <button class="add add-block" id="addTrigBottom">+ 添加触发器</button>
             <div class="hint">
               触发器引用上面某个监控器，当<strong>该监控器读到的值变化</strong>时，判断条件是否满足，
-              满足则调用 funscript 里对应的事件 ID。
+              满足则调用 funscript 里对应的事件 ID。<br>
+              「当值」可用竖线 | 分隔多个值（任一命中即满足）。同一监控器有多个触发器同时命中时，
+              <strong>只触发列表中最下方（最新添加）的那个</strong>，因此请把更精确的规则放在下面。
             </div>
           </div>
         </div>
@@ -851,7 +869,7 @@
         });
         renderMonitors();
       };
-      shadow.getElementById('addTrig').onclick = () => {
+      const addTrigger = () => {
         // 用上一个触发器做模板（清空 value，eventId 自动设为第一个未占用的）
         const last = panelTriggers[panelTriggers.length - 1];
         const base = last ? { enabled: last.enabled !== false, monitorId: last.monitorId || '', match: last.match || 'equals' }
@@ -868,7 +886,14 @@
           eventId: freeEventId
         });
         renderTriggers();
+        // 滚动到新添加的触发器（列表底部按钮直接可见，顶部按钮则滚到最下）
+        requestAnimationFrame(() => {
+          const list = shadow.getElementById('trigList');
+          if (list && list.lastElementChild) list.lastElementChild.scrollIntoView({ block: 'nearest' });
+        });
       };
+      shadow.getElementById('addTrig').onclick = addTrigger;
+      shadow.getElementById('addTrigBottom').onclick = addTrigger;
       shadow.querySelectorAll('.pos button').forEach(b => {
         b.onclick = async () => {
           setPosition(b.dataset.pos);

@@ -238,19 +238,30 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab || !tab.id) return;
   if (info.menuItemId === 'hfes-associate') {
-    chrome.tabs.sendMessage(tab.id, {
-      type: 'HFES_TOGGLE_PANEL',
-      position: (info && info._position) || null
-    }).catch(() => {
-      // 内容脚本未注入（如 chrome:// 页面），尝试注入后再打开
-      if (/^https?:/i.test(tab.url || '')) {
-        chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] })
-          .then(() => chrome.tabs.sendMessage(tab.id, { type: 'HFES_TOGGLE_PANEL', position: null }))
-          .catch(() => console.warn('[HFES] 该页面无法注入内容脚本'));
-      }
-    });
+    togglePanelForTab(tab, null);
   }
 });
+
+// 左键点击插件图标：同样在当前页面打开/关闭「关联」面板
+// （manifest 中 action 未设置 default_popup，故 onClicked 会触发）
+chrome.action.onClicked.addListener((tab) => {
+  if (!tab || !tab.id) return;
+  togglePanelForTab(tab, null);
+});
+
+function togglePanelForTab(tab, position) {
+  chrome.tabs.sendMessage(tab.id, {
+    type: 'HFES_TOGGLE_PANEL',
+    position: position || null
+  }).catch(() => {
+    // 内容脚本未注入（如 chrome:// 页面），尝试注入后再打开
+    if (/^https?:/i.test(tab.url || '')) {
+      chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] })
+        .then(() => chrome.tabs.sendMessage(tab.id, { type: 'HFES_TOGGLE_PANEL', position: null }))
+        .catch(() => console.warn('[HFES] 该页面无法注入内容脚本'));
+    }
+  });
+}
 
 // ---------------- URL 监听 ----------------
 
