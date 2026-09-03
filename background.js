@@ -315,6 +315,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        case 'HFES_GET_SCRIPT_FUNSCRIPT': {
+          const scripts = await getScripts();
+          const target = scripts.find(s => s.id === msg.scriptId);
+          if (!target) { sendResponse({ ok: false, error: '脚本不存在' }); break; }
+          sendResponse({ ok: true, funscript: target.funscript || { events: [] } });
+          break;
+        }
+
+        case 'HFES_UPDATE_SCRIPT_EVENT': {
+          const scripts = await getScripts();
+          const target = scripts.find(s => s.id === msg.scriptId);
+          if (!target) { sendResponse({ ok: false, error: '脚本不存在' }); break; }
+          if (!target.funscript) target.funscript = { events: [] };
+          if (!Array.isArray(target.funscript.events)) target.funscript.events = [];
+          // 找到或新建该 eventId 对应的事件
+          let ev = target.funscript.events.find(e => e.id === msg.eventId);
+          if (!ev) {
+            ev = { id: msg.eventId, title: msg.title || msg.label || msg.eventId,
+                   metadata: { title: msg.title || msg.label || msg.eventId },
+                   actions: [] };
+            target.funscript.events.push(ev);
+          }
+          // 覆盖 actions（保留其他字段）
+          ev.actions = Array.isArray(msg.actions) ? msg.actions : [];
+          // 标题/名称：同时写 metadata.title（Funscript 规范）和顶层 title（兼容内部存储）
+          if (msg.title != null) {
+            ev.title = msg.title;
+            if (ev.metadata) ev.metadata.title = msg.title;
+          }
+          if (msg.loop != null) {
+            ev.loop = msg.loop;
+            if (ev.metadata) ev.metadata.loop = !!msg.loop;
+          }
+          await saveScripts(scripts);
+          sendResponse({ ok: true });
+          break;
+        }
+
         case 'HFES_SAVE_DOMAIN_RULE_MONITORS': {
           const groups = await getDomainRuleGroups();
           const target = groups.find(g => g.id === msg.ruleGroupId);

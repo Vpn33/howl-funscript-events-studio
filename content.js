@@ -286,6 +286,9 @@
       .mon .del-btn { background: transparent; border: 1px solid #ff6b6b55; color: #ff9090; border-radius: 4px;
                      cursor: pointer; font-size: 12px; padding: 1px 10px; margin-left: auto; }
       .mon .del-btn:hover { background: #ff6b6b22; border-color: #ff9090; color: #ffb0b0; }
+      .edit-ev-btn { background: #3b82f622; border: 1px solid #3b82f666; color: #93c5fd; border-radius: 4px;
+                     cursor: pointer; font-size: 12px; padding: 1px 8px; white-space: nowrap; }
+      .edit-ev-btn:hover { background: #3b82f644; color: #bfdbfe; }
       .mon .chk { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #a0a0b8; }
       .mon .test { background: #2e6da4; color: #fff; border: none; border-radius: 4px;
                    padding: 4px 14px; cursor: pointer; font-size: 12px; }
@@ -560,7 +563,7 @@
     r4.appendChild(val);
     card.appendChild(r4);
 
-    // 触发事件 ID
+    // 触发事件 ID + 编辑按钮
     const r5 = el('div', 'row');
     r5.appendChild(el('span', 'lbl', '触发'));
     const ev = document.createElement('select');
@@ -576,6 +579,15 @@
     if (ev.selectedIndex < 0) ev.value = '';
     ev.onchange = () => { t.eventId = ev.value; };
     r5.appendChild(ev);
+    // 编辑事件按钮
+    const editEvBtn = el('button', 'edit-ev-btn', '编辑事件');
+    editEvBtn.title = '在面板中直接编辑此事件的动作';
+    editEvBtn.style.marginLeft = '6px';
+    editEvBtn.onclick = () => {
+      if (!panelScriptId || !t.eventId) { alert('请先选择脚本和事件'); return; }
+      openEventEditor(panelScriptId, t.eventId, host.shadowRoot);
+    };
+    r5.appendChild(editEvBtn);
     card.appendChild(r5);
 
     // 测试按钮（条件匹配模式）
@@ -619,6 +631,51 @@
     const addBtn = host.shadowRoot.getElementById('addMon');
     if (addBtn) addBtn.style.display = readonly ? 'none' : '';
     renderTriggers();
+  }
+
+  // ---- 事件编辑器弹窗（iframe 加载 inline-editor.html）----
+  function openEventEditor(scriptId, eventId, sr) {
+    const bg = el('div', 'ev-editor-bg');
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:2147483646;' +
+                       'display:flex;align-items:center;justify-content:center;';
+    const box = el('div', null, '');
+    box.style.cssText = 'width:min(1000px,96vw);height:min(720px,90vh);' +
+                        'background:white;border-radius:10px;overflow:hidden;' +
+                        'box-shadow:0 12px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;';
+    const iframe = document.createElement('iframe');
+    iframe.src = chrome.runtime.getURL('inline-editor.html') + `#scriptId=${encodeURIComponent(scriptId)}&eventId=${encodeURIComponent(eventId)}`;
+    iframe.style.cssText = 'width:100%;height:100%;border:none;';
+    iframe.title = '编辑事件 ' + eventId;
+    box.appendChild(iframe);
+    bg.appendChild(box);
+
+    // 监听 iframe 的 postMessage（关闭/保存通知）
+    const onMsg = (e) => {
+      const d = e.data;
+      if (!d || d.__hfes_inline_editor__ !== true) return;
+      if (d.action === 'close' || d.action === 'saved') {
+        bg.remove();
+        window.removeEventListener('message', onMsg);
+        if (d.action === 'saved') {
+          // 刷新面板里的 trigger 下拉（以防新增了事件）
+          renderTriggers();
+        }
+      }
+    };
+    window.addEventListener('message', onMsg);
+
+    // 点背景关闭
+    bg.addEventListener('click', (e) => {
+      if (e.target === bg) { bg.remove(); window.removeEventListener('message', onMsg); }
+    });
+
+    // ESC 关闭
+    const onKey = (e) => {
+      if (e.key === 'Escape') { bg.remove(); window.removeEventListener('message', onMsg); window.removeEventListener('keydown', onKey); }
+    };
+    window.addEventListener('keydown', onKey);
+
+    sr.appendChild(bg);
   }
 
   function renderTriggers() {
