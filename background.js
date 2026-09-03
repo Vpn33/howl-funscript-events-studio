@@ -4,8 +4,25 @@
 const DEFAULT_SETTINGS = {
   host: 'http://127.0.0.1:9080',
   apiKey: '',
-  panelPosition: 'right' // left | right | bottom
+  panelPosition: 'right', // left | right | bottom
+  allowedHosts: []        // 监听网站白名单，空=全部监听；支持 *.example.com 通配
 };
+
+// hostname 白名单匹配
+function isHostAllowed(hostname, allowedHosts) {
+  if (!Array.isArray(allowedHosts) || allowedHosts.length === 0) return true;
+  const h = (hostname || '').toLowerCase();
+  for (const raw of allowedHosts) {
+    const r = (raw || '').trim().toLowerCase();
+    if (!r) continue;
+    if (r === h) return true;
+    if (r.startsWith('*.')) {
+      const suffix = r.slice(1); // .example.com
+      if (h.endsWith(suffix)) return true;
+    }
+  }
+  return false;
+}
 
 // ---------------- Storage ----------------
 
@@ -118,9 +135,13 @@ async function evaluateTab(tabId, url, force) {
   let hostname;
   try { hostname = new URL(url).hostname; } catch { hostname = ''; }
 
+  // 白名单拦截：被屏蔽的 host 直接退出，省掉后续所有工作
+  const quickSettings = await getSettings();
+  if (!isHostAllowed(hostname, quickSettings.allowedHosts)) return;
+
   const [scripts, settings, allRuleGroups] = await Promise.all([
     getScripts(),
-    getSettings(),
+    Promise.resolve(quickSettings), // 复用，避免再次读存储
     getDomainRuleGroups()
   ]);
 
@@ -196,7 +217,6 @@ async function evaluateTab(tabId, url, force) {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: 'hfes-settings', title: 'Settings', contexts: ['action'] });
     chrome.contextMenus.create({ id: 'hfes-associate', title: '关联', contexts: ['action'] });
   });
 
@@ -217,9 +237,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab || !tab.id) return;
-  if (info.menuItemId === 'hfes-settings') {
-    chrome.runtime.openOptionsPage();
-  } else if (info.menuItemId === 'hfes-associate') {
+  if (info.menuItemId === 'hfes-associate') {
     chrome.tabs.sendMessage(tab.id, {
       type: 'HFES_TOGGLE_PANEL',
       position: (info && info._position) || null
@@ -268,6 +286,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'HFES_GET_STATE': {
           const [settings, scripts] = await Promise.all([getSettings(), getScripts()]);
           const url = msg.url || '';
+          try {
+            const u = new URL(url);
+            // 只对 http(s) 页面应用白名单；扩展页/chrome 内部页永远放行
+            if (/^https?:/i.test(u.protocol) && !isHostAllowed(u.hostname, settings.allowedHosts)) {
+              sendResponse({ ok: true, blocked: true });
+              break;
+            }
+          } catch (_) {}
           const matched = findScriptByUrl(scripts, url);
           sendResponse({
             ok: true,
@@ -320,6 +346,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const target = scripts.find(s => s.id === msg.scriptId);
           if (!target) { sendResponse({ ok: false, error: '脚本不存在' }); break; }
           sendResponse({ ok: true, funscript: target.funscript || { events: [] } });
+          break;
+        }
+
+        case 'HFES_BACKUP': {
+          const all = await chrome.storage.local.get(null);
+          sendResponse({ ok: true, data: all });
+          break;
+        }
+
+        case 'HFES_RESTORE': {
+          if (!msg.data || typeof msg.data !== 'object') {
+            sendResponse({ ok: false, error: '无效数据' });
+            break;
+          }
+          await chrome.storage.local.set(msg.data);
+          sendResponse({ ok: true });
           break;
         }
 

@@ -760,6 +760,12 @@
 
     const resp = await chrome.runtime.sendMessage({ type: 'HFES_GET_STATE', url: location.href });
     if (!resp || !resp.ok) { console.warn('[HFES] 获取状态失败'); return; }
+    // 白名单拦截：当前 host 不在监听列表 → 静默退出，不报错
+    if (resp.blocked) {
+      console.log('[HFES] 当前域名不在监听白名单，跳过');
+      if (host) { host.remove(); host = null; }
+      return;
+    }
     panelState = { scripts: resp.scripts, settings: resp.settings, url: location.href };
 
     // 使用 background 在最后一次 evaluateTab 时推送过来的缓存信息

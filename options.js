@@ -1,11 +1,10 @@
 // howl-funscript-events-studio - options app（运行在 sandbox.html 沙箱页中）
 // 脚本库管理 + 完整波形编辑器 + 全局设置
-// 数据存储：chrome.storage.local { settings, scripts: [{id, filename, url, funscript, monitors}] }
-// API 调用：background service worker（HFES_* 消息）
 // 注意：沙箱页不能直接使用 chrome.* API，统一通过 postMessage 桥接（broker.js 在壳页面中）
 
 const { createApp, ref, reactive, computed, watch, onMounted, nextTick } = Vue;
 const ElMessage = ElementPlus.ElMessage;
+const ElMessageBox = ElementPlus.ElMessageBox;
 const Core = window.WaveEditorCore; // wave-editor-core.js（共享波形编辑器核心）
 
 function clamp(v, min, max) { return Core ? Core.clamp(v, min, max) : Math.min(max, Math.max(min, v)); }
@@ -75,15 +74,74 @@ createApp({
       host: 'http://127.0.0.1:9080',
       apiKey: '',
       panelPosition: 'right',
-      pushPlay: false
+      pushPlay: false,
+      allowedHosts: []
     });
 
     // 域名规则组：{ id, name, domain, monitors[] } - 用于同一域名的多个监控器共享配置
     const domainRuleGroups = reactive([]);
     const testResult = ref(null);
 
+    // ---- 监听网站白名单 ----
+    const allowedHostsSaved = ref(false);
+    const allowedHostsText = computed({
+      get: () => (settings.allowedHosts || []).join('\n'),
+      set: (val) => {
+        settings.allowedHosts = val.split('\n').map(s => s.trim()).filter(Boolean);
+      }
+    });
+    function saveAllowedHosts() {
+      persistSettings();
+      allowedHostsSaved.value = true;
+      setTimeout(() => { allowedHostsSaved.value = false; }, 2000);
+    }
+
+    // ---- 备份 / 恢复 ----
+    function pickBackupFile() {
+      const el = document.getElementById('backupFileInput');
+      if (el) el.click();
+    }
+    async function doBackup() {
+      const resp = await sendBg('HFES_BACKUP');
+      if (!resp || !resp.ok) { ElMessage.error('备份失败'); return; }
+      const blob = new Blob([JSON.stringify(resp.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      a.href = url; a.download = `hfes-backup-${ts}.json`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      ElMessage.success('备份已下载');
+    }
+    async function onRestoreFile(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if (!data || typeof data !== 'object') throw new Error('格式错误');
+        await ElMessageBox.confirm('恢复会覆盖当前所有设置、脚本和监控器，确定继续吗？', '恢复确认', {
+          confirmButtonText: '确定恢复', cancelButtonText: '取消', type: 'warning'
+        });
+        const resp = await sendBg('HFES_RESTORE', { data });
+        if (resp && resp.ok) {
+          ElMessage.success('恢复成功，即将刷新…');
+          setTimeout(() => location.reload(), 1000);
+        } else {
+          ElMessage.error('恢复失败');
+        }
+      } catch (err) {
+        if (err !== 'cancel') ElMessage.error('恢复失败: ' + err.message);
+      }
+      e.target.value = '';
+    }
+
+    let persistTimer = null;
     async function persistSettings() {
-      await setStore({ settings: JSON.parse(JSON.stringify(settings)) });
+      clearTimeout(persistTimer);
+      persistTimer = setTimeout(async () => {
+        await setStore({ settings: JSON.parse(JSON.stringify(settings)) });
+      }, 400);
     }
     watch(settings, persistSettings, { deep: true });
 
@@ -812,6 +870,8 @@ createApp({
     return {
       // 设置
       settings, testResult, testConnection,
+      allowedHostsText, saveAllowedHosts, allowedHostsSaved,
+      pickBackupFile, doBackup, onRestoreFile,
       // 脚本库
       scripts, mainTab, refreshScripts, scriptTitle, eventCount,
       triggerImportFile, importFileRef, onImportFiles, createNewScript,
