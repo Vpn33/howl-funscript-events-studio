@@ -108,6 +108,18 @@
     .btn-cancel-md:hover { border-color: #409eff; color: #409eff; }
     .btn-confirm-md { background: #409eff; color: white; }
     .btn-confirm-md:hover { background: #337ecc; }
+    /* 窄屏适配（移动设备 / 侧边窄面板 iframe） */
+    @media (max-width: 640px) {
+      .app { padding: 6px; gap: 6px; }
+      .topbar { flex-wrap: wrap; row-gap: 6px; padding: 8px 10px; }
+      .topbar h1 { flex: 1 1 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .topbar .label-row { flex: 1 1 45%; min-width: 0; }
+      .topbar .label-row input { min-width: 0; flex: 1; width: auto; }
+      .btn-row { padding: 6px 8px; gap: 6px; }
+      .btn-row button { padding: 5px 10px; }
+      .btn-row input[type="number"] { width: 70px; }
+      .wave-gen { flex-wrap: wrap; white-space: normal; overflow-x: visible; row-gap: 6px; }
+    }
   </style>
 </head>
 <body>

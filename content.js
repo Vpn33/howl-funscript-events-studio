@@ -14,6 +14,7 @@
 
   let activeMonitors = [];   // 当前生效的监控器（只含 selector/observe，来自域名规则组）
   let activeTriggers = [];   // 当前生效的触发器（monitorId + match/value/eventId，来自匹配脚本）
+  let matchedScriptCache = null; // 缓存整个 matchedScript 对象（包含 events 数组）
   let lastValues = new Map(); // monitorId -> 上次读到的值（值变化时重新判断 triggers）
   let currentMatchKey = null; // 当前匹配 key（domainGroupId + scriptId 组合）
   let mo = null;
@@ -137,7 +138,12 @@
 
   async function triggerEvent(eventId, monitor) {
     try {
-      const resp = await chrome.runtime.sendMessage({ type: 'HFES_TRIGGER_EVENT', eventId });
+      const msg = { type: 'HFES_TRIGGER_EVENT', eventId };
+      const metadata = matchedScriptCache?.events?.find(ev => ev.id === eventId)?.metadata || {};
+      if (Object.keys(metadata).length) {
+        msg.metadata = metadata;
+      }
+      const resp = await chrome.runtime.sendMessage(msg);
       if (resp && resp.ok) {
         console.info(`[HFES] 事件已触发: ${eventId} (monitor: ${monitor.selector})`);
       } else {
@@ -223,6 +229,11 @@
     activeTriggers = msg && Array.isArray(msg.triggers)
       ? msg.triggers.filter(t => t.enabled !== false)
       : [];
+
+    // 缓存整个 matchedScript 对象（包含 events 数组，触发时直接查找）
+    if (msg && msg.matchedScript) {
+      matchedScriptCache = msg.matchedScript;
+    }
 
     // 缓存供面板读取
     lastDomainRule = msg && msg.domainRule ? msg.domainRule : null;
@@ -603,6 +614,30 @@
       openEventEditor(panelScriptId, t.eventId, host.shadowRoot);
     };
     r5.appendChild(editEvBtn);
+    // 新增事件按钮：为当前脚本创建空事件并选中
+    const addEvBtn = el('button', 'edit-ev-btn', '+事件');
+    addEvBtn.title = '为当前脚本新增一个空事件，并选中为该触发器的事件';
+    addEvBtn.style.marginLeft = '6px';
+    addEvBtn.onclick = async () => {
+      if (!panelScriptId) { alert('当前页面未关联脚本，请先在设置中关联'); return; }
+      const id = (prompt('新事件 ID（如 page3）：') || '').trim();
+      if (!id) return;
+      let title = prompt('事件名称（标题，可留空）：', id);
+      if (title === null) title = id;
+      title = title.trim() || id;
+      const resp = await chrome.runtime.sendMessage({ type: 'HFES_ADD_EVENT', scriptId: panelScriptId, eventId: id, title });
+      if (!resp || !resp.ok) { alert('添加失败：' + ((resp && resp.error) || '未知错误')); return; }
+      // 更新本地缓存，让所有事件下拉立即可见新 ID
+      const sc = panelState.scripts.find(s => s.id === panelScriptId);
+      if (sc) {
+        if (!Array.isArray(sc.eventIds)) sc.eventIds = [];
+        if (!sc.eventIds.includes(id)) sc.eventIds.push(id);
+      }
+      t.eventId = id;
+      renderTriggers();
+      showToast('已添加事件 ' + id);
+    };
+    r5.appendChild(addEvBtn);
     card.appendChild(r5);
 
     // 测试按钮（条件匹配模式）

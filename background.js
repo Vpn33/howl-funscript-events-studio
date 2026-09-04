@@ -205,7 +205,8 @@ async function evaluateTab(tabId, url, force) {
       id: matchedScript.id,
       title: (matchedScript.funscript && matchedScript.funscript.metadata && matchedScript.funscript.metadata.title) || '',
       triggers: matchedScript.triggers || [],
-      eventIds: ((matchedScript.funscript && matchedScript.funscript.events) || []).map(ev => ev.id || '').filter(Boolean)
+      eventIds: ((matchedScript.funscript && matchedScript.funscript.events) || []).map(ev => ev.id || '').filter(Boolean),
+      events: matchedScript.funscript?.events || []
     } : null,
     monitors,
     triggers,
@@ -406,6 +407,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        case 'HFES_OPEN_EDITOR_TAB': {
+          const url = msg.url || '';
+          if (!url) { sendResponse({ ok: false, error: '缺少编辑器 URL' }); break; }
+          chrome.tabs.create({ url, active: true }, () => {
+            sendResponse({ ok: true });
+          }).catch(() => { sendResponse({ ok: false, error: '无法创建标签页' }); });
+          break;
+        }
+
+        case 'HFES_ADD_EVENT': {
+          const scripts = await getScripts();
+          const target = scripts.find(s => s.id === msg.scriptId);
+          if (!target) { sendResponse({ ok: false, error: '脚本不存在' }); break; }
+          const id = String(msg.eventId || '').trim();
+          if (!id) { sendResponse({ ok: false, error: '事件 ID 不能为空' }); break; }
+          if (!target.funscript) target.funscript = { events: [] };
+          if (!Array.isArray(target.funscript.events)) target.funscript.events = [];
+          if (target.funscript.events.some(e => e.id === id)) {
+            sendResponse({ ok: false, error: `事件 ID "${id}" 已存在` });
+            break;
+          }
+          const title = String(msg.title || '').trim() || id;
+          target.funscript.events.push({ id, title, metadata: { title }, actions: [] });
+          await saveScripts(scripts);
+          sendResponse({ ok: true });
+          break;
+        }
+
         case 'HFES_SAVE_DOMAIN_RULE_MONITORS': {
           const groups = await getDomainRuleGroups();
           const target = groups.find(g => g.id === msg.ruleGroupId);
@@ -417,12 +446,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case 'HFES_TRIGGER_EVENT': {
+          // ① 检查 Howl 设备 player 状态
+          try {
+            const status = await howlApi('/status');
+            if (!status.ok) throw new Error('无法获取设备状态');
+            
+            const deviceState = status.body || {};
+            // 如果 player.playing === true，跳过本次触发（避免覆盖正在播放的）
+            // 额外条件：只有当当前播放内容的 title 不以要触发的事件 title 结尾时才跳过
+            if (deviceState.player && deviceState.player.playing === true) {
+              const currentTitle = deviceState.player.title || '';
+              const eventTitle = msg.metadata?.title || msg.eventId;
+              // 如果当前正在播放的内容 title 以要触发的事件 title 结尾，则不跳过（允许覆盖）
+              if (currentTitle.endsWith(eventTitle)) {
+                console.log('[HFES] 跳过事件触发：player 正在播放且内容相同不必重复');
+                sendResponse({ ok: true, skipped: 'player_playing' });
+                break;
+              }
+            }
+          } catch (e) {
+            // 状态查询失败（设备离线/网络问题），直接发事件（宁可触发，不让用户错过）
+            console.warn('[HFES] 无法获取 player 状态，继续触发:', e.message);
+          }
+
+          // ② 正常发送事件
           try {
             const r = await howlApi('/event', { id: msg.eventId });
             if (r.ok) sendResponse({ ok: true, body: r.body });
             else sendResponse({ ok: false, error: apiErrorMessage(r) });
           } catch (e) {
-            sendResponse({ ok: false, error: '网络错误: ' + e.message });
+            sendResponse({ ok: false, error: '网络错误：' + e.message });
           }
           break;
         }

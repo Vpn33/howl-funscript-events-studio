@@ -344,6 +344,18 @@ createApp({
       if (editingId.value) {
         const idx = list.findIndex(s => s.id === editingId.value);
         if (idx >= 0) {
+          // 级联重命名：按位置对比新旧事件 ID，把触发器里引用的旧 ID 同步为新 ID，
+          // 保证关联数据（content 面板触发器）始终指向最新的事件
+          const oldEvents = (list[idx].funscript && Array.isArray(list[idx].funscript.events)) ? list[idx].funscript.events : [];
+          const renameMap = {};
+          data.events.forEach((ne, i) => {
+            const oldId = oldEvents[i] ? (oldEvents[i].id || '') : '';
+            const newId = ne.id || '';
+            if (oldId && newId && oldId !== newId) renameMap[oldId] = newId;
+          });
+          if (Object.keys(renameMap).length && Array.isArray(list[idx].triggers)) {
+            list[idx].triggers.forEach(t => { if (t && renameMap[t.eventId]) t.eventId = renameMap[t.eventId]; });
+          }
           list[idx].funscript = data;
           if (!list[idx].filename) list[idx].filename = (data.metadata.title || 'script') + '.funscript';
         } else {
