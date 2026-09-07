@@ -17,8 +17,9 @@
   #app { max-width: 1180px; margin: 0 auto; padding: 16px; }
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
   .toolbar h2 { margin: 0 12px 0 0; font-size: 18px; }
-  .canvas-wrap { position: relative; }
-  canvas.wave { width: 100%; height: 300px; display: block; border: 1px solid #dcdfe6; border-radius: 4px; background: #fafafa; touch-action: none; cursor: crosshair; }
+  .canvas-wrap { position: relative; overflow: hidden; }
+  canvas.wave { width: 100%; height: 300px; display: block; border: 1px solid #dcdfe6; border-radius: 4px; background: #fafafa; touch-action: none; cursor: grab; }
+  canvas.wave:active { cursor: grabbing; }
   .hint { color: #909399; font-size: 12px; margin: 6px 0 12px; }
   .event-header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .json-box { width: 100%; }
@@ -196,7 +197,12 @@
                       @pointermove="onPointerMove"
                       @pointerup="onPointerUp"
                       @pointerleave="onPointerUp"
-                      @contextmenu.prevent="onContextMenu"></canvas>
+                      @contextmenu.prevent="onContextMenu"
+                      @wheel="onWheel"
+                      @touchstart.prevent.stop="onTouchStart"
+                      @touchmove.prevent.stop="onTouchMove"
+                      @touchend="onTouchEnd"
+                      @touchcancel="onTouchEnd"></canvas>
               <el-button size="small" style="position:absolute;right:8px;top:8px;" @click="togglePlay">
                 {{ playing ? '停止' : '预览播放' }}
               </el-button>
@@ -299,6 +305,19 @@
         <div style="margin-top:8px;">
           <el-button size="small" @click="saveAllowedHosts">保存白名单</el-button>
           <el-tag v-if="allowedHostsSaved" type="success" size="small" style="margin-left:8px;">已保存</el-tag>
+        </div>
+      </el-card>
+      <el-card shadow="never" class="mb8">
+        <template #header><b>Canvas 缩放设置</b></template>
+        <el-form label-width="140px" style="max-width:640px;">
+          <el-form-item label="默认最大显示范围 (秒)">
+            <el-input-number v-model="settings.zoomMin" :min="1" :step="1" size="small" style="width:200px;"></el-input-number>
+            <div class="hint" style="font-size:10px;color:#909399;margin-top:4px;">表格只显示最近 N 秒的动作，提升性能（Canvas 始终显示完整波形）。滚轮缩放最小为 0.1 秒</div>
+          </el-form-item>
+        </el-form>
+        <div style="margin-top:8px;">
+          <el-button type="primary" @click="saveZoomMin">保存 Canvas 设置</el-button>
+          <el-tag v-if="zoomMinSaved" type="success" size="small" style="margin-left:8px;">已保存</el-tag>
         </div>
       </el-card>
       <el-card shadow="never" class="mb8">

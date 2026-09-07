@@ -75,7 +75,8 @@ createApp({
       apiKey: '',
       panelPosition: 'right',
       pushPlay: false,
-      allowedHosts: []
+      allowedHosts: [],
+      zoomMin: 10          // 默认最大显示范围 (秒)
     });
 
     // 域名规则组：{ id, name, domain, monitors[] } - 用于同一域名的多个监控器共享配置
@@ -84,6 +85,9 @@ createApp({
 
     // ---- 监听网站白名单 ----
     const allowedHostsSaved = ref(false);
+    
+    // Canvas 缩放设置
+    const zoomMinSaved = ref(false);
     const allowedHostsText = computed({
       get: () => (settings.allowedHosts || []).join('\n'),
       set: (val) => {
@@ -95,6 +99,27 @@ createApp({
       allowedHostsSaved.value = true;
       setTimeout(() => { allowedHostsSaved.value = false; }, 2000);
     }
+
+    // Canvas 缩放设置保存
+    function saveZoomMin() {
+      const ms = settings.zoomMin * 1000;
+      if (ms < 100) {
+        ElMessage.warning('请输入至少 0.1 秒的时间范围');
+        return;
+      }
+      persistSettings();
+      zoomMinSaved.value = true;
+      setTimeout(() => { zoomMinSaved.value = false; }, 2000);
+    }
+
+    let persistTimer = null;
+    async function persistSettings() {
+      clearTimeout(persistTimer);
+      persistTimer = setTimeout(async () => {
+        await setStore({ settings: JSON.parse(JSON.stringify(settings)) });
+      }, 400);
+    }
+    watch(settings, persistSettings, { deep: true });
 
     // ---- 备份 / 恢复 ----
     function pickBackupFile() {
@@ -135,15 +160,6 @@ createApp({
       }
       e.target.value = '';
     }
-
-    let persistTimer = null;
-    async function persistSettings() {
-      clearTimeout(persistTimer);
-      persistTimer = setTimeout(async () => {
-        await setStore({ settings: JSON.parse(JSON.stringify(settings)) });
-      }, 400);
-    }
-    watch(settings, persistSettings, { deep: true });
 
     // ================= 域名规则组管理 =================
 
@@ -470,8 +486,8 @@ createApp({
     const activeEvent = computed(() => events[activeIndex.value] || null);
     const totalActions = computed(() => events.reduce((s, e) => s + e.actions.length, 0));
 
-    // 时间范围筛选（秒）
-    const viewRangeMs = ref(10000);
+    // 时间范围筛选（秒）- 已改为 displayRangeMs
+    // const viewRangeMs = ref(10000);
 
     function eventMaxAt(ev) { return ev.actions.length ? Math.max(...ev.actions.map(a => a.at)) : 0; }
 
@@ -505,17 +521,17 @@ createApp({
     function sortDedupe(i) { normalize(i); }
     function invert(i) { events[i].actions.forEach(a => a.pos = 100 - a.pos); }
 
-    // 过滤后的动作列表（只显示最近 viewRangeMs 的动作）
+    // 过滤后的动作列表（只显示最近 displayRangeMs 的动作）
     const filteredActions = computed(() => {
       const ev = activeEvent.value;
       if (!ev) return [];
       const maxAt = Math.max(...ev.actions.map(a => a.at));
-      const minAt = Math.max(0, maxAt - viewRangeMs.value);
+      const minAt = Math.max(0, maxAt - displayRangeMs.value);
       return ev.actions.filter(a => a.at >= minAt);
     });
 
     function applyViewRange() {
-      const ms = viewRangeMs.value;
+      const ms = displayRangeMs.value;
       if (ms < 1000) {
         ElMessage.warning('请输入至少 1 秒的时间范围');
         return;
@@ -723,6 +739,12 @@ createApp({
     let rafId = null;
     let playStart = 0;
 
+    // 缩放相关状态（使用响应式变量以便 Vue 追踪变化）
+    const currentZoomMin = ref(10000);
+    let touchStartDist = 0;
+    let touchStartScale = 1;
+    let isPinching = false;
+
     let selStartX = 0, selStartY = 0;
     let selCurX = 0, selCurY = 0;
     let isRightSelecting = false;
@@ -730,7 +752,14 @@ createApp({
 
     const viewMs = computed(() => {
       const ev = activeEvent.value;
-      return Core ? Core.viewMs(ev ? ev.actions : []) : Math.max(5000, Math.ceil((ev ? eventMaxAt(ev) : 0) / 1000) * 1000);
+      if (!ev || !ev.actions.length) return (typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000;
+      
+      // 默认显示最近 10 秒的数据（从末尾开始），与 inline-editor 保持一致
+      const maxAt = eventMaxAt(ev);
+      const zoomMinMs = Math.max(settings.zoomMin * 1000, (typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000);
+      
+      // 如果总时长超过 zoomMin，则显示从末尾开始的最近 zoomMin 范围
+      return maxAt > settings.zoomMin ? zoomMinMs : maxAt;
     });
 
     function toData(evt) {
@@ -824,7 +853,7 @@ createApp({
         Core.draw(ctx, canvas, ev ? ev.actions : [], {
           dragIdx, playing: playing.value, playheadMs: playheadMs.value,
           isRightSelecting, selStartX, selStartY, selCurX, selCurY,
-          vm: viewMs.value
+          vm: displayRangeMs.value  // 使用当前显示范围
         });
         return;
       }
@@ -880,6 +909,83 @@ createApp({
     }
     function stopPlay() { playing.value = false; playheadMs.value = 0; if (rafId) cancelAnimationFrame(rafId); draw(); }
 
+    // ========== 缩放功能 ==========
+    const displayRangeMs = ref((typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000);  // 当前显示范围（从末尾开始）
+    
+    function onWheel(e) {
+      e.stopPropagation();
+      console.log('onWheel called, ctrlKey:', e.ctrlKey, 'metaKey:', e.metaKey);
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const canvas = getCanvas();
+        const rect = canvas.getBoundingClientRect();
+        
+        // 滚轮灵敏度：5% 每步（基于 deltaY）
+        const zoomFactor = 1.05;
+        const scaleDelta = e.deltaY > 0 ? zoomFactor : 1 / zoomFactor;
+        
+        // 直接修改 displayRangeMs，基于当前值缩放
+        displayRangeMs.value *= scaleDelta;
+        
+        console.log('sandbox zoom: scaleDelta:', scaleDelta.toFixed(4), 'new displayRangeMs:', Math.round(displayRangeMs.value));
+        
+        draw();
+      } else {
+        console.log('Ctrl/Cmd not pressed, ignoring wheel event');
+      }
+    }
+    
+    // 在 canvas 挂载后绑定事件
+    onMounted(() => {
+      const canvas = getCanvas();
+      if (canvas) {
+        canvas.onWheel = onWheel;
+      }
+    });
+    
+    function onTouchStart(e) {
+      if (e.touches.length === 2) {
+        isPinching = true;
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const dx1 = touch1.clientX - touch1.clientY;
+        const dy1 = touch1.clientX + touch1.clientY;
+        const dx2 = touch2.clientX - touch2.clientY;
+        const dy2 = touch2.clientX + touch2.clientY;
+        touchStartDist = Math.hypot(dx2 - dx1, dy2 - dy1);
+        touchStartScale = lastScale.value;
+      }
+    }
+    
+    function onTouchMove(e) {
+      if (e.touches.length === 2 && isPinching) {
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const dx1 = touch1.clientX - touch1.clientY;
+        const dy1 = touch1.clientX + touch1.clientY;
+        const dx2 = touch2.clientX - touch2.clientY;
+        const dy2 = touch2.clientX + touch2.clientY;
+        const currentDist = Math.hypot(dx2 - dx1, dy2 - dy1);
+        
+        if (touchStartDist > 5) {
+          const scaleRatio = currentDist / touchStartDist;
+          
+          // 直接修改 viewMs，基于当前值缩放
+          viewMs.value *= scaleRatio;
+          
+          console.log('sandbox touch zoom: scaleRatio:', scaleRatio.toFixed(4), 'new viewMs:', Math.round(viewMs.value));
+          
+          draw();
+        }
+      }
+    }
+    
+    function onTouchEnd(e) {
+      if (e.touches.length < 2) {
+        isPinching = false;
+      }
+    }
+
     watch([events, activeName], () => nextTick(draw), { deep: true });
     watch(playing, v => { if (!v && rafId) cancelAnimationFrame(rafId); });
 
@@ -918,11 +1024,13 @@ createApp({
       addDomainRuleGroupMonitor,
       // 编辑器
       meta, version, events, activeName, activeIndex, activeEvent, totalActions, eventMaxAt,
-      viewRangeMs, filteredActions, applyViewRange,
+      displayRangeMs, filteredActions, applyViewRange,
       addEvent, duplicateEvent, removeEvent, addAction, removeAction, sortDedupe, invert,
       funscriptJson, copyJson, downloadJson, importDialogVisible, importText, doImport, doImportAndSave, loadSample,
       pushToDevice, fmtDuration, editingId, editingName,
+      // 画布编辑
       canvasRef, playing, onPointerDown, onPointerMove, onPointerUp, onContextMenu, togglePlay,
+      onWheel, onTouchStart, onTouchMove, onTouchEnd,
       waveShapes, gen, appendWave,
       pulseDialogVisible, pulseText, pulseFileRef, pulseBreakFlat, pulseVariation, triggerPulseFile, onPulseFile, doImportPulse,
       actionsTableRef, selectedActions, rangeDelStart, rangeDelEnd,

@@ -26,7 +26,8 @@
     /* canvas 区 */
     .canvas-wrap { flex: 1; min-height: 180px; background: white;
                    border: 1px solid #e4e7ed; border-radius: 6px; position: relative; overflow: hidden; }
-    canvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+    canvas { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+    canvas:active { cursor: grabbing; }
     .playhead-info { position: absolute; top: 6px; right: 10px; font-size: 11px;
                      color: #666; background: rgba(255,255,255,0.85); padding: 2px 6px; border-radius: 3px; }
     /* actions 表格 */
@@ -48,177 +49,124 @@
                       background: white; cursor: pointer; font-size: 12px; color: #606266; }
     .btn-row button:hover { border-color: #409eff; color: #409eff; }
     .btn-row button.primary { background: #409eff; color: white; border-color: #409eff; }
-    .btn-row button.primary:hover { background: #66b1ff; }
-    .btn-row button.danger { color: #f56c6c; border-color: #f56c6c; }
-    .btn-row button.danger:hover { background: #fef0f0; }
-    .btn-row button.danger:disabled { color: #c0c4cc; border-color: #e4e7ed; cursor: not-allowed; background: transparent; }
-    .btn-row button.plain-warn { color: #e6a23c; border-color: #e6a23c; }
-    .btn-row button.plain-warn:hover { background: #fdf6ec; }
-    .btn-row .divider { width: 1px; height: 18px; background: #ebeef5; margin: 0 4px; }
-    .btn-row label { color: #909399; font-size: 12px; display: flex; align-items: center; gap: 4px; }
-    .btn-row input[type="number"] { padding: 4px 8px; border: 1px solid #dcdfe6; border-radius: 4px;
-                                    font-size: 12px; width: 90px; }
-    .btn-row input[type="number"]:focus { outline: none; border-color: #409eff; }
-    /* 内置波形生成器 */
-    .wave-gen { display: flex; gap: 10px; padding: 8px 12px; background: white;
-                border: 1px solid #e4e7ed; border-radius: 6px; align-items: center;
-                flex-wrap: nowrap; white-space: nowrap; font-size: 12px; overflow-x: auto; }
-    .wave-gen label { color: #606266; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-    .wave-gen select, .wave-gen input[type="number"] {
-      padding: 4px 8px; border: 1px solid #dcdfe6; border-radius: 4px; font-size: 12px;
-      background: white; color: #333; flex-shrink: 0;
-    }
-    .wave-gen select:focus, .wave-gen input[type="number"]:focus { outline: none; border-color: #409eff; }
-    .wave-gen input[type="number"] { width: 62px; }
-    .wave-gen select { width: 130px; }
-    .wave-gen input[type="checkbox"] { margin-right: 2px; }
-    .wave-gen .btn-gen { padding: 5px 14px; background: #67c23a; color: white; border: none;
-                         border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; flex-shrink: 0; }
-    .wave-gen .btn-gen:hover { background: #529b2e; }
-    .wave-gen .btn-pulse { padding: 5px 14px; background: white; color: #409eff; border: 1px solid #409eff;
-                           border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0; }
-    .wave-gen .btn-pulse:hover { background: #ecf5ff; }
+    /* 波形生成器 */
+    .wavegen { display: flex; gap: 8px; padding: 8px 12px; background: white;
+               border: 1px solid #e4e7ed; border-radius: 6px; align-items: center; flex-wrap: wrap; }
+    .wavegen button { padding: 5px 12px; border-radius: 4px; border: 1px solid #dcdfe6;
+                      background: white; cursor: pointer; font-size: 12px; }
+    .wavegen select, .wavegen input { padding: 4px 8px; border: 1px solid #dcdfe6; border-radius: 3px; }
+    /* 脉冲导入模态框 */
+    #pulseModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                  background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+    #pulseModal .modal { background: white; border-radius: 8px; padding: 20px; width: 70%; max-width: 640px; }
+    #pulseModal textarea { width: 100%; height: 200px; margin: 10px 0; font-family: monospace; font-size: 11px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
     /* loading */
-    .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-               color: #999; font-size: 14px; }
-    /* 模态框 */
-    .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000;
-                  display: flex; align-items: center; justify-content: center; }
-    .modal-box { background: white; border-radius: 8px; width: 520px; max-width: 92vw;
-                 max-height: 86vh; display: flex; flex-direction: column; overflow: hidden;
-                 box-shadow: 0 8px 28px rgba(0,0,0,0.2); }
-    .modal-title { padding: 14px 20px; font-size: 15px; font-weight: 600; color: #303133;
-                   border-bottom: 1px solid #ebeef5; background: #fafbfc; flex-shrink: 0; }
-    .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
-    .modal-toolbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; color: #606266; }
-    .modal-toolbar button { padding: 5px 12px; border-radius: 4px; border: 1px solid #dcdfe6;
-                            background: white; cursor: pointer; font-size: 12px; }
-    .modal-toolbar button:hover { border-color: #409eff; color: #409eff; }
-    .modal-toolbar label { display: flex; align-items: center; gap: 4px; }
-    .modal-toolbar input[type="number"] { padding: 4px 8px; border: 1px solid #dcdfe6; border-radius: 4px; font-size: 12px; }
-    .modal-body textarea { width: 100%; height: 200px; padding: 8px 10px; border: 1px solid #dcdfe6;
-                           border-radius: 4px; font-family: monospace; font-size: 12px; color: #333;
-                           resize: vertical; }
-    .modal-body textarea:focus { outline: none; border-color: #409eff; }
-    .modal-hint { margin-top: 10px; font-size: 11px; color: #909399; line-height: 1.6; }
-    .modal-footer { padding: 12px 20px; border-top: 1px solid #ebeef5; display: flex;
-                    justify-content: flex-end; gap: 10px; flex-shrink: 0; background: #fafbfc; }
-    .modal-footer button { padding: 7px 18px; border-radius: 4px; cursor: pointer; font-size: 13px; border: none; }
-    .btn-cancel-md { background: white; border: 1px solid #dcdfe6 !important; color: #606266; }
-    .btn-cancel-md:hover { border-color: #409eff; color: #409eff; }
-    .btn-confirm-md { background: #409eff; color: white; }
-    .btn-confirm-md:hover { background: #337ecc; }
-    /* 窄屏适配（移动设备 / 侧边窄面板 iframe） */
-    @media (max-width: 640px) {
-      .app { padding: 6px; gap: 6px; }
-      .topbar { flex-wrap: wrap; row-gap: 6px; padding: 8px 10px; }
-      .topbar h1 { flex: 1 1 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .topbar .label-row { flex: 1 1 45%; min-width: 0; }
-      .topbar .label-row input { min-width: 0; flex: 1; width: auto; }
-      .btn-row { padding: 6px 8px; gap: 6px; }
-      .btn-row button { padding: 5px 10px; }
-      .btn-row input[type="number"] { width: 70px; }
-      .wave-gen { flex-wrap: wrap; white-space: normal; overflow-x: visible; row-gap: 6px; }
-    }
+    #loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+               background: rgba(255,255,255,0.9); display: flex; justify-content: center; align-items: center;
+               z-index: 9999; font-size: 14px; color: #606266; }
+    /* 时间范围控件 */
+    .range-control { display: flex; align-items: center; gap: 6px; }
+    .range-control input[type="number"] { width: 80px; padding: 4px 8px; border: 1px solid #dcdfe6; border-radius: 3px; }
+    /* 提示 */
+    .hint { font-size: 11px; color: #909399; margin-left: auto; }
   </style>
 </head>
 <body>
+<div id="loading">加载中...</div>
+
 <div class="app">
   <div class="topbar">
-    <h1 id="evTitle">加载中…</h1>
+    <h1>Funscript 事件编辑器</h1>
     <div class="label-row">
-      <span>ID：</span>
-      <input type="text" id="evIdInput" readonly style="background:#1e1e2e;border-color:#3a3a55;cursor:default;">
+      <span>ID:</span>
+      <input type="text" id="evIdInput" placeholder="event_id">
     </div>
     <div class="label-row">
-      <span>名称：</span>
+      <span>名称:</span>
       <input type="text" id="evTitleInput" placeholder="事件名称">
     </div>
     <button class="btn btn-push" id="btnPush">推送到设备</button>
     <button class="btn btn-cancel" id="btnCancel">取消</button>
-    <button class="btn btn-save" id="btnSave">保存</button>
+    <button class="btn btn-save primary" id="btnSave">保存</button>
   </div>
 
-  <div class="canvas-wrap" id="canvasWrap">
+  <!-- canvas -->
+  <div class="canvas-wrap">
     <canvas id="cv"></canvas>
     <div class="playhead-info" id="phInfo"></div>
-    <div class="loading" id="loading">加载事件数据…</div>
   </div>
 
-  <div class="btn-row">
-    <button id="btnAdd">+ 添加动作</button>
-    <button id="btnDelSel" class="danger" disabled>删除选中 (0)</button>
-    <button id="btnClear" class="danger">清空全部</button>
-    <div class="divider"></div>
-    <label>时间范围显示（秒）
-      <input type="number" id="viewRangeMs" min="1000" step="1000" value="10000" style="width:90px">
-      <button id="btnApplyRange" class="plain-warn" style="margin-left:4px;">应用</button>
-    </label>
-    <div class="hint" style="font-size:10px;color:#909399;margin-left:6px;">表格只显示最近 10 秒的动作，提升性能（Canvas 始终显示完整波形）</div>
-    <label>按时间删除
-      <input type="number" id="rangeStart" min="0" step="100" placeholder="起始">
-      ~
-      <input type="number" id="rangeEnd" min="0" step="100" placeholder="结束">
-    </label>
-    <button id="btnDelRange" class="plain-warn">删除区间</button>
-    <div class="divider"></div>
-    <button id="btnSort">排序去重</button>
-    <button id="btnLoop">切换循环</button>
-    <button id="btnPlay" class="primary">预览播放</button>
+  <!-- 波形生成器 -->
+  <div class="wavegen">
+    <span>内置波形</span>
+    <select id="wgShape"><option value="sine">正弦波 (Sine)</option></select>
+    <label><input type="checkbox" id="wgFromEnd" checked>从末尾开始</label>
+    <span>时长 ms</span>
+    <input type="number" id="wgDuration" value="5000" min="100" step="500">
+    <span>周期 ms</span>
+    <input type="number" id="wgPeriod" value="1000" min="50" step="100">
+    <span>位置 min</span>
+    <input type="number" id="wgMin" value="0" min="0" max="100">
+    <span>max</span>
+    <input type="number" id="wgMax" value="100" min="0" max="100">
+    <button id="btnGenWave">生成并添加</button>
+    <el-divider direction="vertical"></el-divider>
+    <button id="btnPulse">导入 .pulse 文件</button>
   </div>
 
-  <div class="wave-gen">
-    <label>内置波形
-      <select id="wgShape"></select>
-    </label>
-    <label><input type="checkbox" id="wgFromEnd" checked> 从末尾开始</label>
-    <label>时长ms <input type="number" id="wgDuration" value="5000" min="100" step="100"></label>
-    <label>周期ms <input type="number" id="wgPeriod" value="1000" min="50" step="50"></label>
-    <label>位置min <input type="number" id="wgMin" value="0" min="0" max="100"></label>
-    <label>max <input type="number" id="wgMax" value="100" min="0" max="100"></label>
-    <button class="btn-gen" id="btnGenWave">生成并添加</button>
-    <button class="btn-pulse" id="btnPulse">导入 .pulse 文件</button>
-    <input type="file" id="pulseFile" accept=".pulse,text/plain" style="display:none">
+  <!-- 脉冲导入模态框 -->
+  <div id="pulseModal" class="modal">
+    <h3>导入 .pulse 波形文件 (Dungeonlab+pulse)</h3>
+    <p style="font-size:12px;color:#666;margin:8px 0 12px;">强度 (0-100)→位置 pos；每个元=100/rate ms；频率信息无法映射到 funscript，将被忽略。</p>
+    <textarea id="pulseText" placeholder="粘贴 .pulse 文件内容"></textarea>
+    <label style="font-size:12px;"><input type="checkbox" id="pulseBreakFlat" checked>自动打破平段</label>
+    <span style="font-size:11px;color:#666;margin-left:8px;">扰动 ±</span>
+    <input type="number" id="pulseVariation" value="3" min="1" max="100" style="width:50px;padding:4px;">
+    <div class="modal-actions">
+      <button id="pulseCancel">取消</button>
+      <button id="pulseImport">导入并添加</button>
+    </div>
   </div>
 
+  <!-- actions 表格 -->
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th class="sel-col"><input type="checkbox" id="chkAll"></th>
-          <th style="width: 40px;">#</th>
+          <th style="width:30px;"><input type="checkbox" id="chkAll"></th>
+          <th style="width:40px;">#</th>
           <th>时间 at (ms)</th>
           <th>位置 pos (0-100)</th>
-          <th style="width: 60px;">操作</th>
+          <th>时间</th>
+          <th></th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
     </table>
   </div>
 
-  <!-- 导入 .pulse 模态框 -->
-  <div class="modal-mask" id="pulseModal" style="display:none">
-    <div class="modal-box">
-      <div class="modal-title">导入 .pulse 波形文件 (Dungeonlab+pulse)</div>
-      <div class="modal-body">
-        <div class="modal-toolbar">
-          <button id="pulsePickFile">选择文件</button>
-          <input type="file" id="pulseFile2" accept=".pulse,text/plain" style="display:none">
-          <label><input type="checkbox" id="pulseBreakFlat" checked> 自动打破平段</label>
-          <label>扰动 ± <input type="number" id="pulseVariation" value="3" min="0" max="20" step="1" style="width:60px"></label>
-        </div>
-        <textarea id="pulseText" placeholder="粘贴 .pulse 文件内容，例如：
-Dungeonlab+pulse:0,1=59,20.39,1,1/100.00-1,100.00-1+section+..."></textarea>
-        <div class="modal-hint">强度(0-100)→位置pos；每个元 = 100/rate ms；频率信息无法映射到 funscript，将被忽略。开启「打破平段」后，连续 ≥3 个 pos 相同的区域会注入 ±扰动。</div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-cancel-md" id="pulseCancel">取消</button>
-        <button class="btn-confirm-md" id="pulseImport">转换并追加到当前事件</button>
-      </div>
+  <!-- 按钮行 -->
+  <div class="btn-row">
+    <button id="btnAdd">+ 添加动作</button>
+    <button id="btnDelSel">删除选中 (0)</button>
+    <button class="btn-row" style="background:#fef0f0;border-color:#fd8989;" id="btnClear">清空全部</button>
+    <div class="range-control">
+      <span>时间范围显示 (秒)</span>
+      <input type="number" id="viewRangeMs" value="10000" min="100" step="100">
+      <button id="btnApplyRange">应用</button>
     </div>
+    <span class="hint">表格只显示最近 10 秒的动作，提升性能 (Canvas 始终显示完整波形)</span>
+    <button id="btnSort">排序去重</button>
+    <button id="btnLoop">切换循环</button>
+    <button id="btnDelRange" style="background:#fef0f0;border-color:#fd8989;">删除区间</button>
+    <button id="btnPlay" class="primary">预览播放</button>
   </div>
 </div>
+
+<!-- wave-editor-core.js -->
 <script src="wave-editor-core.js"></script>
+<!-- inline-editor.js -->
 <script src="inline-editor.js"></script>
 </body>
 </html>

@@ -4,6 +4,12 @@
 (function (global) {
   'use strict';
 
+  // ========== 全局配置（导出到全局 API）==========
+  const CONFIG = {
+    defaultZoomMin: 10000,  // 默认显示最近 10 秒的数据（单位：ms）
+    zoomStep: 0.1           // 滚轮缩放步长（10%）
+  };
+
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
   /**
@@ -27,12 +33,14 @@
   /**
    * 计算视图时间范围（ms）
    * @param {{at:number,pos:number}[]} actions
-   * @returns {number} 至少 5000ms，向上取整到秒
+   * @param {number} zoomMin 最小缩放级别 (默认 10000ms = 10 秒)
+   * @returns {number} 至少 zoomMin ms，向上取整到 100ms 倍数
    */
-  function viewMs(actions) {
-    if (!actions || !actions.length) return 5000;
+  function viewMs(actions, zoomMin = CONFIG.defaultZoomMin) {
+    if (!actions || !actions.length) return zoomMin;
     const maxAt = Math.max(...actions.map(a => a.at || 0));
-    return Math.max(5000, Math.ceil(maxAt / 1000) * 1000);
+    // 向上取整到 100ms 倍数，但至少为 zoomMin
+    return Math.max(zoomMin, Math.ceil(maxAt / 100) * 100);
   }
 
   /**
@@ -174,16 +182,111 @@
    *   canvas.addEventListener('pointermove', handlers.onPointerMove);
    *   canvas.addEventListener('pointerup',   handlers.onPointerUp);
    *   canvas.addEventListener('contextmenu', handlers.onContextMenu);
+   *   canvas.addEventListener('wheel',     handlers.onWheel, { passive: false });
+   *   canvas.addEventListener('touchstart', handlers.onTouchStart, { passive: false });
+   *   canvas.addEventListener('touchmove',  handlers.onTouchMove, { passive: false });
+   *   canvas.addEventListener('touchend',   handlers.onTouchEnd);
    *
-   * @returns {{onPointerDown, onPointerMove, onPointerUp, onContextMenu}}
+   * @returns {{onPointerDown, onPointerMove, onPointerUp, onContextMenu, onWheel, onTouchStart, onTouchMove, onTouchEnd}}
    */
   function createPointerHandlers(cfg) {
     let dragIdx = -1;
     let selStartX = 0, selStartY = 0, selCurX = 0, selCurY = 0;
     let isRightClick = false, isRightSelecting = false;
+    
+    // 缩放相关状态
+    let lastScale = 1;
+    let currentZoomMin = CONFIG.defaultZoomMin;
+    let touchStartDist = 0;
+    let touchStartScale = 1;
+    let isPinching = false;
 
-    function getVm() { return cfg.getViewMs ? cfg.getViewMs() : viewMs(cfg.getActions()); }
+    function getVm() { return cfg.getViewMs ? cfg.getViewMs() : viewMs(cfg.getActions(), currentZoomMin); }
     function redraw() { cfg.onChange && cfg.onChange(); }
+    
+    /**
+     * 滚轮缩放处理
+     */
+    const onWheel = function (e) {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const canvas = cfg.getCanvas();
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // 计算缩放中心点的数据坐标
+        const vmBefore = getVm();
+        const centerMsBefore = (x / rect.width) * vmBefore;
+        
+        // 滚轮灵敏度：10% 每步
+        const scaleDelta = e.deltaY > 0 ? 0.9 : 1.1;
+        lastScale = Math.max(0.1, Math.min(5, lastScale * scaleDelta));
+        
+        // 计算新的 viewMs，保持缩放中心点不变
+        const vmAfter = centerMsBefore / ((x / rect.width) * lastScale);
+        currentZoomMin = Math.max(100, vmAfter);
+        
+        console.log('zoom: lastScale:', lastScale, 'currentZoomMin:', currentZoomMin, 'vmAfter:', vmAfter);
+        redraw();
+      }
+    };
+    
+    /**
+     * 触摸缩放处理（双指缩放）
+     */
+    const onTouchStart = function (e) {
+      if (e.touches.length === 2) {
+        isPinching = true;
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const dx1 = touch1.clientX - touch1.clientY;
+        const dy1 = touch1.clientX + touch1.clientY;
+        const dx2 = touch2.clientX - touch2.clientY;
+        const dy2 = touch2.clientX + touch2.clientY;
+        touchStartDist = Math.hypot(dx2 - dx1, dy2 - dy1);
+        touchStartScale = lastScale;
+        e.preventDefault();
+      }
+    };
+    
+    const onTouchMove = function (e) {
+      if (e.touches.length === 2 && isPinching) {
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const dx1 = touch1.clientX - touch1.clientY;
+        const dy1 = touch1.clientX + touch1.clientY;
+        const dx2 = touch2.clientX - touch2.clientY;
+        const dy2 = touch2.clientX + touch2.clientY;
+        const currentDist = Math.hypot(dx2 - dx1, dy2 - dy1);
+        
+        if (touchStartDist > 5) {
+          const scaleRatio = currentDist / touchStartDist;
+          lastScale = Math.max(0.1, Math.min(5, touchStartScale * scaleRatio));
+          
+          // 计算缩放中心点，保持内容居中
+          const canvas = cfg.getCanvas();
+          const rect = canvas.getBoundingClientRect();
+          const centerX = (touch1.clientX + touch2.clientX) / 2;
+          const centerY = (touch1.clientY + touch2.clientY) / 2;
+          
+          const vmBefore = viewMs(cfg.getActions(), currentZoomMin);
+          const centerMsBefore = ((centerX - rect.left) / rect.width) * vmBefore;
+          
+          const vmAfter = centerMsBefore / (((centerX - rect.left) / rect.width) * newScale);
+          currentZoomMin = Math.max(100, vmAfter);
+          
+          redraw();
+        }
+        e.preventDefault();
+      }
+    };
+    
+    const onTouchEnd = function (e) {
+      if (e.touches.length < 2) {
+        isPinching = false;
+      }
+    };
 
     const onPointerDown = function (e) {
       const actions = cfg.getActions(); if (!actions) return;
@@ -260,7 +363,16 @@
 
     const onContextMenu = function (e) { e.preventDefault(); };
 
-    return { onPointerDown, onPointerMove, onPointerUp, onContextMenu };
+    return { 
+      onPointerDown, 
+      onPointerMove, 
+      onPointerUp, 
+      onContextMenu,
+      onWheel,
+      onTouchStart,
+      onTouchMove,
+      onTouchEnd
+    };
   }
 
   // ---- 播放控制（辅助） ----
@@ -619,7 +731,8 @@
     clamp, normalize, viewMs, toData, nearestPoint, draw,
     createPointerHandlers, createPlayer,
     WAVE_SHAPES, generateWave,
-    parsePulseToActions, postProcessFlatSegments
+    parsePulseToActions, postProcessFlatSegments,
+    CONFIG  // 导出配置供外部访问
   };
 
   // 浏览器全局
