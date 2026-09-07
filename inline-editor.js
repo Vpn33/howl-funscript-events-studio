@@ -22,6 +22,10 @@
   let isRightClick = false, isRightSelecting = false;
   const selectedRows = new Set(); // 选中的行索引
 
+  // ---- 时间范围筛选 ----
+  let viewRangeMs = 10000; // 默认显示最近 10 秒的数据 (10000ms)
+  let minAt = 0; // 起始时间阈值
+
   // ---- DOM ----
   const canvas = document.getElementById('cv');
   const tbody = document.getElementById('tbody');
@@ -50,7 +54,24 @@
   const rangeEnd = document.getElementById('rangeEnd');
   const btnDelRange = document.getElementById('btnDelRange');
 
+  // ---- 监听数据变化 ----
+  let dataWatchers = [];
+  function watchData(callback) {
+    dataWatchers.push(callback);
+  }
+  function notifyDataChanged() {
+    for (const cb of dataWatchers) cb();
+  }
+
+  // 时间范围控制 DOM
+  const viewRangeMsInput = document.getElementById('viewRangeMs');
+  const btnApplyRange = document.getElementById('btnApplyRange');
+
   // ---- 数据操作 ----
+  function filterActionsByRange(actions, minAt) {
+    return actions.filter(a => a.at >= minAt);
+  }
+
   function sortAndRender() {
     Core.normalize(eventData.actions);
     selectedRows.clear();
@@ -58,15 +79,32 @@
     fullDraw();
   }
 
-  // ---- 绘制 ----
+  function updateViewRange(ms) {
+    viewRangeMs = Math.min(ms, eventData.actions.length ? eventData.actions[eventData.actions.length - 1].at : 0);
+    const maxAt = eventData.actions.length ? Math.max(...eventData.actions.map(a => a.at)) : 0;
+    minAt = Math.max(0, maxAt - viewRangeMs);
+    notifyDataChanged();
+  }
+
+  // ---- 绘制（更新视图时重绘）----
   function fullDraw() {
     if (!eventData) return;
+    
+    // 使用所有动作数据绘制，但通过 viewMs 控制显示范围
     const ctx = canvas.getContext('2d');
     Core.draw(ctx, canvas, eventData.actions, {
       dragIdx, playing, playheadMs,
       isRightSelecting, selStartX, selStartY, selCurX, selCurY,
       vm: Core.viewMs(eventData.actions)
     });
+  }
+
+  let lastDrawTime = 0;
+  function throttledDraw() {
+    const now = Date.now();
+    if (now - lastDrawTime < 50) return; // 节流：每 50ms 最多重绘一次
+    lastDrawTime = now;
+    fullDraw();
   }
 
   function updateDeleteSelBtn() {
@@ -78,37 +116,49 @@
   // ---- 表格 ----
   function renderTable() {
     if (!eventData) return;
+    
+    // 获取当前视图范围内的动作（只显示最近 viewRangeMs 的数据）
+    const actionsToShow = eventData.actions.filter(a => a.at >= minAt);
+    
     tbody.innerHTML = '';
-    const n = eventData.actions.length;
+    const n = actionsToShow.length;
+    if (n === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#909399;padding:20px;">暂无动作数据</td></tr>';
+      chkAll.checked = false;
+      chkAll.indeterminate = false;
+      return;
+    }
+
     for (let i = 0; i < n; i++) {
-      const a = eventData.actions[i];
+      const a = actionsToShow[i];
+      const originalIdx = eventData.actions.indexOf(a); // 获取原始索引
       const tr = document.createElement('tr');
-      const checked = selectedRows.has(i) ? 'checked' : '';
+      const checked = selectedRows.has(originalIdx) ? 'checked' : '';
       tr.innerHTML = `
-        <td class="sel-col"><input type="checkbox" data-i="${i}" ${checked}></td>
+        <td class="sel-col"><input type="checkbox" data-i="${originalIdx}" ${checked}></td>
         <td style="color:#909399;">${i + 1}</td>
-        <td><input type="number" min="0" step="any" value="${a.at}"></td>
-        <td><input type="number" min="0" max="100" step="1" value="${a.pos}"></td>
-        <td><button class="del-link" data-i="${i}">删除</button></td>
+        <td><input type="number" min="0" step="any" value="${a.at}" onchange="inlineEditor.updateActionAt(${originalIdx}, this.value)"></td>
+        <td><input type="number" min="0" max="100" step="1" value="${a.pos}" onchange="inlineEditor.updateActionPos(${originalIdx}, this.value)"></td>
+        <td><button class="del-link" data-i="${originalIdx}">删除</button></td>
       `;
       const cbs = tr.querySelectorAll('input[type="checkbox"]');
       cbs[0].addEventListener('change', (e) => {
-        if (e.target.checked) selectedRows.add(i); else selectedRows.delete(i);
+        if (e.target.checked) selectedRows.add(originalIdx); else selectedRows.delete(originalIdx);
         updateDeleteSelBtn();
       });
       const inputs = tr.querySelectorAll('input[type="number"]');
       inputs[0].addEventListener('change', () => {
-        eventData.actions[i].at = Math.max(0, parseInt(inputs[0].value) || 0);
+        eventData.actions[originalIdx].at = Math.max(0, parseInt(inputs[0].value) || 0);
         sortAndRender();
       });
       inputs[1].addEventListener('change', () => {
-        eventData.actions[i].pos = Core.clamp(parseInt(inputs[1].value) || 0, 0, 100);
+        eventData.actions[originalIdx].pos = Core.clamp(parseInt(inputs[1].value) || 0, 0, 100);
         sortAndRender();
       });
       tr.querySelector('.del-link').addEventListener('click', (e) => {
         const idx = parseInt(e.target.dataset.i);
         eventData.actions.splice(idx, 1);
-        // 修正 selectedRows
+        // 修正 selectedRows：删除后后面的索引都前移
         const newSet = new Set();
         selectedRows.forEach(j => { if (j < idx) newSet.add(j); else if (j > idx) newSet.add(j - 1); });
         selectedRows.clear();
@@ -117,11 +167,29 @@
       });
       tbody.appendChild(tr);
     }
+    
     // 全选 checkbox 状态
-    chkAll.checked = n > 0 && selectedRows.size === n;
-    chkAll.indeterminate = selectedRows.size > 0 && selectedRows.size < n;
+    const totalActions = eventData.actions.length;
+    chkAll.checked = n > 0 && selectedRows.size === totalActions;
+    chkAll.indeterminate = selectedRows.size > 0 && selectedRows.size < totalActions && n > 0;
     updateDeleteSelBtn();
   }
+
+  // 暴露给全局的作用域，供表格中的 onchange 事件调用
+  window.inlineEditor = {
+    updateActionAt: function(idx, value) {
+      if (idx >= 0 && idx < eventData.actions.length) {
+        eventData.actions[idx].at = Math.max(0, parseInt(value) || 0);
+        sortAndRender();
+      }
+    },
+    updateActionPos: function(idx, value) {
+      if (idx >= 0 && idx < eventData.actions.length) {
+        eventData.actions[idx].pos = Core.clamp(parseInt(value) || 0, 0, 100);
+        sortAndRender();
+      }
+    }
+  };
 
   chkAll.addEventListener('change', () => {
     if (!eventData) return;
@@ -280,6 +348,37 @@
     selectedRows.clear();
     sortAndRender();
   };
+
+  // 时间范围应用按钮
+  btnApplyRange.onclick = () => {
+    if (!eventData) return;
+    const ms = parseInt(viewRangeMsInput.value);
+    if (isNaN(ms) || ms < 1000) { alert('请输入至少 1 秒的时间范围'); return; }
+    
+    // 计算新的起始时间阈值（总时长 - 显示范围）
+    const maxAt = eventData.actions.length ? Math.max(...eventData.actions.map(a => a.at)) : 0;
+    minAt = Math.max(0, maxAt - ms);
+    
+    renderTable();
+    fullDraw();
+    
+    // 更新输入框显示
+    viewRangeMsInput.value = ms;
+  };
+
+  // 实时更新显示范围（当用户调整数据时自动适应）
+  watchData(() => {
+    if (!eventData) return;
+    const maxAt = Math.max(...eventData.actions.map(a => a.at));
+    const minAtNow = Math.max(0, maxAt - viewRangeMs);
+    
+    // 只有当 minAt 变化时才更新，避免不必要的重绘
+    if (minAt !== minAtNow) {
+      minAt = minAtNow;
+      renderTable();
+      fullDraw();
+    }
+  });
 
   // ---- 内置波形生成器 ----
   function initWaveGen() {
@@ -456,7 +555,10 @@
             actions: JSON.parse(JSON.stringify(ev.actions || [])) }
         : { id: EVENT_ID, title: EVENT_ID, actions: [], loop: false };
 
-      titleEl.textContent = '编辑事件：' + EVENT_ID;
+      // 默认显示最近 10 秒的数据
+      viewRangeMs = 10000;
+      
+      titleEl.textContent = '编辑事件：' + eventData.title;
       idInput.value = eventData.id;
       titleInput.value = eventData.title;
       titleInput.oninput = () => { eventData.title = titleInput.value; };
@@ -465,6 +567,13 @@
       loading.remove();
 
       initWaveGen();
+      
+      // 自动计算并应用初始时间范围
+      if (eventData.actions.length > 0) {
+        const maxAt = Math.max(...eventData.actions.map(a => a.at));
+        minAt = Math.max(0, maxAt - viewRangeMs);
+      }
+      
       renderTable();
       fullDraw();
     } catch (e) {

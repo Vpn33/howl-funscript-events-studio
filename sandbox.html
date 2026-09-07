@@ -176,6 +176,12 @@
               </el-input>
               <el-checkbox v-model="ev.loop">循环 (loop)</el-checkbox>
               <el-tag size="small" type="info">时长 {{ fmtDuration(eventMaxAt(ev)) }}</el-tag>
+              <span style="display:flex;align-items:center;gap:6px;">
+                <span class="wg-label" style="font-size:11px;color:#606266;">时间范围 (秒)</span>
+                <el-input-number v-model="viewRangeMs" :min="1000" :step="1000" size="small" :controls="false" style="width:80px"></el-input-number>
+                <el-button size="small" @click="applyViewRange">应用</el-button>
+              </span>
+              <div class="hint" style="font-size:10px;color:#909399;margin-left:6px;">表格只显示最近 10 秒的动作，提升性能（Canvas 始终显示完整波形）</div>
               <span style="flex:1"></span>
               <el-button size="small" @click="sortDedupe(i)">排序去重</el-button>
               <el-button size="small" @click="invert(i)">反转波形</el-button>
@@ -220,7 +226,7 @@
             </div>
 
             <!-- 动作表 -->
-            <el-table :data="activeEvent ? activeEvent.actions : []" size="small" max-height="260" border
+            <el-table :data="filteredActions" size="small" max-height="260" border style="overflow-x: auto"
                       ref="actionsTableRef" @selection-change="onSelectionChange">
               <el-table-column type="selection" width="40"></el-table-column>
               <el-table-column type="index" label="#" width="50"></el-table-column>

@@ -470,6 +470,9 @@ createApp({
     const activeEvent = computed(() => events[activeIndex.value] || null);
     const totalActions = computed(() => events.reduce((s, e) => s + e.actions.length, 0));
 
+    // 时间范围筛选（秒）
+    const viewRangeMs = ref(10000);
+
     function eventMaxAt(ev) { return ev.actions.length ? Math.max(...ev.actions.map(a => a.at)) : 0; }
 
     function normalize(i) {
@@ -501,6 +504,24 @@ createApp({
     function removeAction(idx) { activeEvent.value.actions.splice(idx, 1); clearTableSelection(); }
     function sortDedupe(i) { normalize(i); }
     function invert(i) { events[i].actions.forEach(a => a.pos = 100 - a.pos); }
+
+    // 过滤后的动作列表（只显示最近 viewRangeMs 的动作）
+    const filteredActions = computed(() => {
+      const ev = activeEvent.value;
+      if (!ev) return [];
+      const maxAt = Math.max(...ev.actions.map(a => a.at));
+      const minAt = Math.max(0, maxAt - viewRangeMs.value);
+      return ev.actions.filter(a => a.at >= minAt);
+    });
+
+    function applyViewRange() {
+      const ms = viewRangeMs.value;
+      if (ms < 1000) {
+        ElMessage.warning('请输入至少 1 秒的时间范围');
+        return;
+      }
+      ElMessage.success(`已切换到最近 ${ms/1000} 秒的视图`);
+    }
 
     const actionsTableRef = ref(null);
     const selectedActions = ref([]);
@@ -897,6 +918,7 @@ createApp({
       addDomainRuleGroupMonitor,
       // 编辑器
       meta, version, events, activeName, activeIndex, activeEvent, totalActions, eventMaxAt,
+      viewRangeMs, filteredActions, applyViewRange,
       addEvent, duplicateEvent, removeEvent, addAction, removeAction, sortDedupe, invert,
       funscriptJson, copyJson, downloadJson, importDialogVisible, importText, doImport, doImportAndSave, loadSample,
       pushToDevice, fmtDuration, editingId, editingName,

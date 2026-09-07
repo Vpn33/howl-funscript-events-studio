@@ -159,6 +159,34 @@ async function evaluateTab(tabId, url, force) {
     chrome.action.setBadgeBackgroundColor({ tabId, color: '#7c3aed' });
 
     try {
+      // ===== 3) 触发器：来自匹配脚本的 triggers[]（引用 monitorId + match/value/eventId） =====
+      const triggers = matchedScript ? (matchedScript.triggers || []).filter(t => t.enabled !== false) : [];
+
+      console.log('[HFES] evaluateTab 结果', {
+        tabId, url, hostname,
+        domainGroup: matchedGroup ? matchedGroup.name : null,
+        scriptTitle: matchedScript ? (matchedScript.funscript?.metadata?.title || matchedScript.filename) : null,
+        monitors: monitors.length,
+        triggers: triggers.length
+      });
+
+      // ===== 4) 推送给内容脚本（monitors 和 triggers 分开） =====
+      // 先给注入页发消息，避免由于远程howl服务没有找到或启用导致的由于网络一直没有返回导致渲染延迟的问题
+      chrome.tabs.sendMessage(tabId, {
+        type: 'HFES_APPLY',
+        domainRule: matchedGroup ? { id: matchedGroup.id, name: matchedGroup.name, domain: matchedGroup.domain, monitors: matchedGroup.monitors || [] } : null,
+        matchedScript: matchedScript ? {
+          id: matchedScript.id,
+          title: (matchedScript.funscript && matchedScript.funscript.metadata && matchedScript.funscript.metadata.title) || '',
+          triggers: matchedScript.triggers || [],
+          eventIds: ((matchedScript.funscript && matchedScript.funscript.events) || []).map(ev => ev.id || '').filter(Boolean),
+          events: matchedScript.funscript?.events || []
+        } : null,
+        monitors,
+        triggers,
+        settings: { panelPosition: settings.panelPosition }
+      }).catch(() => { /* 页面不支持内容脚本时忽略 */ });
+
       console.log('[HFES] 调用 /status (tabId=%d)', tabId);
       const st = await howlApi('/status');
       if (st.ok) {
@@ -185,33 +213,6 @@ async function evaluateTab(tabId, url, force) {
   } else {
     chrome.action.setBadgeText({ tabId, text: '' });
   }
-
-  // ===== 3) 触发器：来自匹配脚本的 triggers[]（引用 monitorId + match/value/eventId） =====
-  const triggers = matchedScript ? (matchedScript.triggers || []).filter(t => t.enabled !== false) : [];
-
-  console.log('[HFES] evaluateTab 结果', {
-    tabId, url, hostname,
-    domainGroup: matchedGroup ? matchedGroup.name : null,
-    scriptTitle: matchedScript ? (matchedScript.funscript?.metadata?.title || matchedScript.filename) : null,
-    monitors: monitors.length,
-    triggers: triggers.length
-  });
-
-  // ===== 4) 推送给内容脚本（monitors 和 triggers 分开） =====
-  chrome.tabs.sendMessage(tabId, {
-    type: 'HFES_APPLY',
-    domainRule: matchedGroup ? { id: matchedGroup.id, name: matchedGroup.name, domain: matchedGroup.domain, monitors: matchedGroup.monitors || [] } : null,
-    matchedScript: matchedScript ? {
-      id: matchedScript.id,
-      title: (matchedScript.funscript && matchedScript.funscript.metadata && matchedScript.funscript.metadata.title) || '',
-      triggers: matchedScript.triggers || [],
-      eventIds: ((matchedScript.funscript && matchedScript.funscript.events) || []).map(ev => ev.id || '').filter(Boolean),
-      events: matchedScript.funscript?.events || []
-    } : null,
-    monitors,
-    triggers,
-    settings: { panelPosition: settings.panelPosition }
-  }).catch(() => { /* 页面不支持内容脚本时忽略 */ });
 }
 
 // ---------------- 右键菜单 ----------------
@@ -305,7 +306,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               sendResponse({ ok: true, blocked: true });
               break;
             }
-          } catch (_) {}
+          } catch (_) { }
           const matched = findScriptByUrl(scripts, url);
           sendResponse({
             ok: true,
@@ -386,9 +387,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // 找到或新建该 eventId 对应的事件
           let ev = target.funscript.events.find(e => e.id === msg.eventId);
           if (!ev) {
-            ev = { id: msg.eventId, title: msg.title || msg.label || msg.eventId,
-                   metadata: { title: msg.title || msg.label || msg.eventId },
-                   actions: [] };
+            ev = {
+              id: msg.eventId, title: msg.title || msg.label || msg.eventId,
+              metadata: { title: msg.title || msg.label || msg.eventId },
+              actions: []
+            };
             target.funscript.events.push(ev);
           }
           // 覆盖 actions（保留其他字段）
@@ -450,7 +453,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           try {
             const status = await howlApi('/status');
             if (!status.ok) throw new Error('无法获取设备状态');
-            
+
             const deviceState = status.body || {};
             // 如果 player.playing === true，跳过本次触发（避免覆盖正在播放的）
             // 额外条件：只有当当前播放内容的 title 不以要触发的事件 title 结尾时才跳过
@@ -524,7 +527,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'HFES_GET_DOMAIN_RULES': {
           const url = msg.url || (sender.tab && sender.tab.url) || '';
           let hostname = '';
-          try { hostname = url ? new URL(url).hostname : ''; } catch {}
+          try { hostname = url ? new URL(url).hostname : ''; } catch { }
           const groups = await getDomainRuleGroups();
           const matched = findDomainRuleGroupByDomain(groups, hostname);
           sendResponse(matched ? (matched.monitors || []) : []);
