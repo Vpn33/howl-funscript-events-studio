@@ -39,7 +39,7 @@ function bridgeCall(type, payload) {
   });
 }
 
-// ---------------- 后台消息 / 存储（均走桥接） ----------------
+// ---------------- 后台消息 / 存储（通过 postMessage 桥接到 broker.js）----------------
 function sendBg(type, extra) {
   return bridgeCall('bg', Object.assign({ type }, extra || {}));
 }
@@ -51,6 +51,7 @@ async function loadStore() {
 async function setStore(patch) {
   return bridgeCall('setStore', patch);
 }
+
 
 const SAMPLE = {
   metadata: { title: "漫画", duration: 162, durationTime: "00:02:42.000",
@@ -76,7 +77,20 @@ createApp({
       panelPosition: 'right',
       pushPlay: false,
       allowedHosts: [],
-      zoomMin: 10          // 默认最大显示范围 (秒)
+      zoomMin: 500        // 默认最大显示范围 (ms)
+    });
+
+    // 从 store 加载保存的 settings（通过 broker.js 桥接）
+    onMounted(async () => {
+      try {
+        const stored = await loadStore();
+        console.log('[options] 加载设置:', stored.settings);
+        if (stored.settings && stored.settings.zoomMin !== undefined) {
+          settings.zoomMin = stored.settings.zoomMin;
+        }
+      } catch (e) {
+        console.warn('[options] 加载设置失败:', e);
+      }
     });
 
     // 域名规则组：{ id, name, domain, monitors[] } - 用于同一域名的多个监控器共享配置
@@ -95,6 +109,7 @@ createApp({
       }
     });
     function saveAllowedHosts() {
+       console.log("saveAllowedHosts")
       persistSettings();
       allowedHostsSaved.value = true;
       setTimeout(() => { allowedHostsSaved.value = false; }, 2000);
@@ -102,9 +117,10 @@ createApp({
 
     // Canvas 缩放设置保存
     function saveZoomMin() {
-      const ms = settings.zoomMin * 1000;
+      console.log('[saveZoomMin] settings.zoomMin:', settings.zoomMin, 'ms')
+      const ms = settings.zoomMin;  // zoomMin 已经是毫秒单位了
       if (ms < 100) {
-        ElMessage.warning('请输入至少 0.1 秒的时间范围');
+        ElMessage.warning('请输入至少 0.1 秒（100ms）的时间范围');
         return;
       }
       persistSettings();
@@ -117,6 +133,7 @@ createApp({
       clearTimeout(persistTimer);
       persistTimer = setTimeout(async () => {
         await setStore({ settings: JSON.parse(JSON.stringify(settings)) });
+        console.log('[persistSettings] 保存设置:', settings.zoomMin, 'ms');
       }, 400);
     }
     watch(settings, persistSettings, { deep: true });
@@ -525,10 +542,52 @@ createApp({
     const filteredActions = computed(() => {
       const ev = activeEvent.value;
       if (!ev) return [];
-      const maxAt = Math.max(...ev.actions.map(a => a.at));
-      const minAt = Math.max(0, maxAt - displayRangeMs.value);
-      return ev.actions.filter(a => a.at >= minAt);
+      const startMs = scrollOffsetMs.value;
+      const endMs = scrollOffsetMs.value + displayRangeMs.value;
+      return ev.actions.filter(a => a.at >= startMs && a.at <= endMs);
     });
+
+    // 滚动条状态
+    const scrollBarVisible = computed(() => {
+      const ev = activeEvent.value;
+      if (!ev || !ev.actions.length) return false;
+      const maxAt = eventMaxAt(ev);
+      return maxAt > displayRangeMs.value;
+    });
+    const scrollBarThumbWidth = computed(() => {
+      const ev = activeEvent.value;
+      if (!ev || !ev.actions.length) return 100;
+      const maxAt = eventMaxAt(ev);
+      return Math.max(5, (displayRangeMs.value / maxAt) * 100);  // 百分比，最小 5%
+    });
+    const scrollBarThumbLeft = computed(() => {
+      const ev = activeEvent.value;
+      if (!ev || !ev.actions.length) return 0;
+      const maxAt = eventMaxAt(ev);
+      const maxOffset = Math.max(1, maxAt - displayRangeMs.value);
+      return (scrollOffsetMs.value / maxOffset) * (100 - scrollBarThumbWidth.value);
+    });
+
+    function onScrollBarMouseDown(e) {
+      isScrollDragging = true;
+      const track = e.currentTarget;
+      const trackRect = track.getBoundingClientRect();
+      const updateOffset = (clientX) => {
+        const ev = activeEvent.value;
+        if (!ev || !ev.actions.length) return;
+        const maxAt = eventMaxAt(ev);
+        const maxOffset = Math.max(0, maxAt - displayRangeMs.value);
+        if (maxOffset <= 0) return;
+        const ratio = Math.max(0, Math.min(1, (clientX - trackRect.left) / trackRect.width));
+        scrollOffsetMs.value = ratio * maxOffset;
+        draw();
+      };
+      updateOffset(e.clientX);
+      const onMove = (e2) => { if (isScrollDragging) updateOffset(e2.clientX); };
+      const onUp = () => { isScrollDragging = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
 
     function applyViewRange() {
       const ms = displayRangeMs.value;
@@ -537,6 +596,21 @@ createApp({
         return;
       }
       ElMessage.success(`已切换到最近 ${ms/1000} 秒的视图`);
+    }
+
+    // 获取 action 在原始数组中的索引
+    function origIdx(row) {
+      const ev = activeEvent.value;
+      if (!ev || !ev.actions) return 0;
+      return ev.actions.indexOf(row);
+    }
+
+    // 点击表格行高亮 canvas 节点
+    function onTableRowClick(row) {
+      const ev = activeEvent.value;
+      if (!ev || !ev.actions.length) return;
+      highlightIdx.value = ev.actions.indexOf(row);
+      draw();
     }
 
     const actionsTableRef = ref(null);
@@ -740,10 +814,13 @@ createApp({
     let playStart = 0;
 
     // 缩放相关状态（使用响应式变量以便 Vue 追踪变化）
-    const currentZoomMin = ref(10000);
+    const currentZoomMin = ref(settings.zoomMin);  // 当前设置的最大显示范围 (ms)
+    const scrollOffsetMs = ref(0);  // 当前滚动偏移（数据起始时间 ms）
     let touchStartDist = 0;
     let touchStartScale = 1;
     let isPinching = false;
+    let isScrollDragging = false;  // 是否正在拖动滚动条
+    const highlightIdx = ref(-1);  // 表格点击高亮的节点索引（全数组索引）
 
     let selStartX = 0, selStartY = 0;
     let selCurX = 0, selCurY = 0;
@@ -754,28 +831,28 @@ createApp({
       const ev = activeEvent.value;
       if (!ev || !ev.actions.length) return (typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000;
       
-      // 默认显示最近 10 秒的数据（从末尾开始），与 inline-editor 保持一致
+      // 默认显示最近 N ms 的数据（从末尾开始），与 inline-editor 保持一致
       const maxAt = eventMaxAt(ev);
-      const zoomMinMs = Math.max(settings.zoomMin * 1000, (typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000);
+      const zoomMinMs = Math.max(settings.zoomMin, (typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000);
       
       // 如果总时长超过 zoomMin，则显示从末尾开始的最近 zoomMin 范围
       return maxAt > settings.zoomMin ? zoomMinMs : maxAt;
     });
 
     function toData(evt) {
-      return Core ? Core.toData(evt, getCanvas(), viewMs.value) : (() => {
+      return Core ? Core.toData(evt, getCanvas(), displayRangeMs.value, scrollOffsetMs.value) : (() => {
         const rect = getCanvas().getBoundingClientRect();
         const x = evt.clientX - rect.left, y = evt.clientY - rect.top;
-        return { ms: clamp(x / rect.width, 0, 1) * viewMs.value, pos: (1 - clamp(y / rect.height, 0, 1)) * 100, x, y };
+        return { ms: clamp(x / rect.width, 0, 1) * displayRangeMs.value + scrollOffsetMs.value, pos: (1 - clamp(y / rect.height, 0, 1)) * 100, x, y };
       })();
     }
     function nearestPoint(x, y) {
       const ev = activeEvent.value; if (!ev || !ev.actions.length) return { idx: -1, dist: Infinity };
-      if (Core) return Core.nearestPoint(ev.actions, getCanvas(), x, y, viewMs.value);
+      if (Core) return Core.nearestPoint(ev.actions, getCanvas(), x, y, displayRangeMs.value, scrollOffsetMs.value);
       const rect = getCanvas().getBoundingClientRect();
       let best = { idx: -1, dist: Infinity };
       ev.actions.forEach((a, i) => {
-        const px = a.at / viewMs.value * rect.width, py = (1 - a.pos / 100) * rect.height;
+        const px = (a.at - scrollOffsetMs.value) / displayRangeMs.value * rect.width, py = (1 - a.pos / 100) * rect.height;
         const d = Math.hypot(px - x, py - y);
         if (d < best.dist) best = { idx: i, dist: d };
       });
@@ -824,7 +901,7 @@ createApp({
             const yMin = Math.min(selStartY, selCurY), yMax = Math.max(selStartY, selCurY);
             const before = ev.actions.length;
             ev.actions = ev.actions.filter(a => {
-              const px = a.at / viewMs.value * rect.width;
+              const px = (a.at - scrollOffsetMs.value) / displayRangeMs.value * rect.width;
               const py = (1 - a.pos / 100) * rect.height;
               return !(px >= xMin && px <= xMax && py >= yMin && py <= yMax);
             });
@@ -850,10 +927,21 @@ createApp({
       const ev = activeEvent.value;
       const ctx = canvas.getContext('2d');
       if (Core) {
-        Core.draw(ctx, canvas, ev ? ev.actions : [], {
-          dragIdx, playing: playing.value, playheadMs: playheadMs.value,
+        // 只绘制当前视图范围内的节点，与表格保持一致
+        const visible = filteredActions.value;
+        // 将 dragIdx（全数组索引）转换为 filteredActions 中的索引
+        let visDragIdx = -1;
+        if (dragIdx >= 0 && ev) {
+          const dragged = ev.actions[dragIdx];
+          visDragIdx = visible.indexOf(dragged);
+        }
+        Core.draw(ctx, canvas, visible, {
+          dragIdx: visDragIdx,
+          highlightIdx: highlightIdx.value >= 0 ? visible.indexOf(ev.actions[highlightIdx.value]) : -1,
+          playing: playing.value, playheadMs: playheadMs.value,
           isRightSelecting, selStartX, selStartY, selCurX, selCurY,
-          vm: displayRangeMs.value  // 使用当前显示范围
+          vm: displayRangeMs.value,
+          offsetMs: scrollOffsetMs.value
         });
         return;
       }
@@ -911,27 +999,48 @@ createApp({
 
     // ========== 缩放功能 ==========
     const displayRangeMs = ref((typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000);  // 当前显示范围（从末尾开始）
-    
+    // const displayRangeMs = ref(settings.zoomMin);  // 当前显示范围（从末尾开始，单位 ms）
+
     function onWheel(e) {
+      // 始终阻止默认行为，防止页面滚动或 Canvas 缩放
+      e.preventDefault();
       e.stopPropagation();
       console.log('onWheel called, ctrlKey:', e.ctrlKey, 'metaKey:', e.metaKey);
       if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const canvas = getCanvas();
-        const rect = canvas.getBoundingClientRect();
+        // Ctrl+滚轮：缩放 Canvas
+        console.log('[sandbox] zoom: ctrlKey=', e.ctrlKey, 'deltaY=', e.deltaY);
         
-        // 滚轮灵敏度：5% 每步（基于 deltaY）
+        const ev = activeEvent.value;
+        if (!ev || !ev.actions.length) return;
+        const maxAt = eventMaxAt(ev);
+        
+        // 滚轮灵敏度：5% 每步
         const zoomFactor = 1.05;
         const scaleDelta = e.deltaY > 0 ? zoomFactor : 1 / zoomFactor;
+        const oldRange = displayRangeMs.value;
+        let newRange = oldRange * scaleDelta;
+        // 限制范围：最小 50ms ~ 总时长
+        newRange = Math.max(50, Math.min(newRange, maxAt || 50));
+        displayRangeMs.value = newRange;
         
-        // 直接修改 displayRangeMs，基于当前值缩放
-        displayRangeMs.value *= scaleDelta;
+        // 调整 scrollOffset，保持数据不超出范围
+        const maxOffset = Math.max(0, maxAt - newRange);
+        if (scrollOffsetMs.value > maxOffset) scrollOffsetMs.value = maxOffset;
         
-        console.log('sandbox zoom: scaleDelta:', scaleDelta.toFixed(4), 'new displayRangeMs:', Math.round(displayRangeMs.value));
-        
+        console.log('sandbox zoom: scaleDelta:', scaleDelta.toFixed(4), 'new range:', Math.round(newRange), 'offset:', Math.round(scrollOffsetMs.value));
         draw();
       } else {
-        console.log('Ctrl/Cmd not pressed, ignoring wheel event');
+        // 横向滚动（非 Ctrl 时滚轮滚动数据）
+        e.preventDefault();
+        const ev = activeEvent.value;
+        if (!ev || !ev.actions.length) return;
+        const maxAt = eventMaxAt(ev);
+        const maxOffset = Math.max(0, maxAt - displayRangeMs.value);
+        if (maxOffset <= 0) return;
+        // 每次滚动 10% 的可见范围
+        const scrollStep = displayRangeMs.value * 0.1;
+        scrollOffsetMs.value = Math.max(0, Math.min(maxOffset, scrollOffsetMs.value + (e.deltaY > 0 ? scrollStep : -scrollStep)));
+        draw();
       }
     }
     
@@ -940,6 +1049,7 @@ createApp({
       const canvas = getCanvas();
       if (canvas) {
         canvas.onWheel = onWheel;
+        // canvas.addEventListener('wheel', onWheel, { passive: false });
       }
     });
     
@@ -986,7 +1096,17 @@ createApp({
       }
     }
 
-    watch([events, activeName], () => nextTick(draw), { deep: true });
+    watch([events, activeName], () => {
+      // 切换事件时重置滚动位置到开头（最早的数据）
+      const ev = activeEvent.value;
+      if (ev && ev.actions.length) {
+        // 默认显示从时间 0 开始，不自动滚动到末尾
+        scrollOffsetMs.value = 0;
+      } else {
+        scrollOffsetMs.value = 0;
+      }
+      nextTick(draw);
+    }, { deep: true });
     watch(playing, v => { if (!v && rafId) cancelAnimationFrame(rafId); });
 
     function onMainTabChange(tab) {
@@ -1025,17 +1145,18 @@ createApp({
       // 编辑器
       meta, version, events, activeName, activeIndex, activeEvent, totalActions, eventMaxAt,
       displayRangeMs, filteredActions, applyViewRange,
+      scrollOffsetMs, scrollBarVisible, scrollBarThumbWidth, scrollBarThumbLeft, onScrollBarMouseDown,
       addEvent, duplicateEvent, removeEvent, addAction, removeAction, sortDedupe, invert,
       funscriptJson, copyJson, downloadJson, importDialogVisible, importText, doImport, doImportAndSave, loadSample,
       pushToDevice, fmtDuration, editingId, editingName,
       // 画布编辑
       canvasRef, playing, onPointerDown, onPointerMove, onPointerUp, onContextMenu, togglePlay,
-      onWheel, onTouchStart, onTouchMove, onTouchEnd,
+      onWheel, onTouchStart, onTouchMove, onTouchEnd, highlightIdx, onTableRowClick, origIdx,
       waveShapes, gen, appendWave,
       pulseDialogVisible, pulseText, pulseFileRef, pulseBreakFlat, pulseVariation, triggerPulseFile, onPulseFile, doImportPulse,
       actionsTableRef, selectedActions, rangeDelStart, rangeDelEnd,
       onSelectionChange, deleteSelected, clearAllActions, deleteByRange,
-      onMainTabChange
+      onMainTabChange, saveZoomMin, zoomMinSaved
     };
   }
 }).use(ElementPlus).mount('#app');

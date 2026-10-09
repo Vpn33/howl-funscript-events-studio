@@ -18,8 +18,11 @@
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
   .toolbar h2 { margin: 0 12px 0 0; font-size: 18px; }
   .canvas-wrap { position: relative; overflow: hidden; }
-  canvas.wave { width: 100%; height: 300px; display: block; border: 1px solid #dcdfe6; border-radius: 4px; background: #fafafa; touch-action: none; cursor: grab; }
+  canvas.wave { width: 100%; height: 300px; display: block; border: 1px solid #dcdfe6; border-radius: 4px; background: #fafafa; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
   canvas.wave:active { cursor: grabbing; }
+  .scroll-track { height: 12px; background: #f0f2f5; border-radius: 6px; margin-top: 4px; position: relative; cursor: pointer; }
+  .scroll-thumb { height: 12px; background: #c0c4cc; border-radius: 6px; position: absolute; top: 0; transition: background 0.2s; }
+  .scroll-thumb:hover { background: #909399; }
   .hint { color: #909399; font-size: 12px; margin: 6px 0 12px; }
   .event-header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .json-box { width: 100%; }
@@ -178,7 +181,7 @@
               <el-checkbox v-model="ev.loop">循环 (loop)</el-checkbox>
               <el-tag size="small" type="info">时长 {{ fmtDuration(eventMaxAt(ev)) }}</el-tag>
               <span style="display:flex;align-items:center;gap:6px;">
-                <span class="wg-label" style="font-size:11px;color:#606266;">时间范围 (秒)</span>
+                <span class="wg-label" style="font-size:11px;color:#606266;">时间范围 (ms)</span>
                 <el-input-number v-model="viewRangeMs" :min="1000" :step="1000" size="small" :controls="false" style="width:80px"></el-input-number>
                 <el-button size="small" @click="applyViewRange">应用</el-button>
               </span>
@@ -207,7 +210,12 @@
                 {{ playing ? '停止' : '预览播放' }}
               </el-button>
             </div>
-            <div class="hint">左键点击空白处添加动作点 / 拖动已有点调整 / 右键点击点删除 / 右键拖拽框选批量删除；横轴为时间(秒)，纵轴为位置(0-100)</div>
+            <div v-if="scrollBarVisible" class="scroll-track" @mousedown="onScrollBarMouseDown">
+              <div class="scroll-thumb"
+                   :style="{ width: scrollBarThumbWidth + '%', left: scrollBarThumbLeft + '%' }">
+              </div>
+            </div>
+            <div class="hint">左键点击空白处添加动作点 / 拖动已有点调整 / 右键点击点删除 / 右键拖拽框选批量删除；横轴为时间 (秒)，纵轴为位置 (0-100)；滚轮横向滚动，Ctrl+ 滚轮缩放</div>
 
             <!-- 波形生成器：内置波形 / .pulse 转换 -->
             <div class="wavegen">
@@ -218,11 +226,11 @@
               <el-checkbox v-model="gen.fromEnd" size="small">从末尾开始</el-checkbox>
               <el-input-number v-show="!gen.fromEnd" v-model="gen.start" :min="0" :step="500" size="small"
                                :controls="false" style="width:90px" title="起始时间 (ms)"></el-input-number>
-              <span class="wg-label">时长ms</span>
+              <span class="wg-label">时长 ms</span>
               <el-input-number v-model="gen.duration" :min="100" :step="500" size="small" :controls="false" style="width:90px"></el-input-number>
-              <span class="wg-label">周期ms</span>
+              <span class="wg-label">周期 ms</span>
               <el-input-number v-model="gen.period" :min="50" :step="100" size="small" :controls="false" style="width:80px"></el-input-number>
-              <span class="wg-label">位置min</span>
+              <span class="wg-label">位置 min</span>
               <el-input-number v-model="gen.min" :min="0" :max="100" size="small" :controls="false" style="width:70px"></el-input-number>
               <span class="wg-label">max</span>
               <el-input-number v-model="gen.max" :min="0" :max="100" size="small" :controls="false" style="width:70px"></el-input-number>
@@ -233,9 +241,12 @@
 
             <!-- 动作表 -->
             <el-table :data="filteredActions" size="small" max-height="260" border style="overflow-x: auto"
-                      ref="actionsTableRef" @selection-change="onSelectionChange">
+                      ref="actionsTableRef" @selection-change="onSelectionChange"
+                      @row-click="onTableRowClick" highlight-current-row>
               <el-table-column type="selection" width="40"></el-table-column>
-              <el-table-column type="index" label="#" width="50"></el-table-column>
+              <el-table-column label="#" width="50">
+                <template #default="{ row }">{{ origIdx(row) + 1 }}</template>
+              </el-table-column>
               <el-table-column label="时间 at (ms)" width="200">
                 <template #default="{ row }">
                   <el-input-number v-model="row.at" :min="0" :step="100" :controls="false" size="small"
@@ -252,8 +263,8 @@
                 <template #default="{ row }">{{ (row.at / 1000).toFixed(3) }}s</template>
               </el-table-column>
               <el-table-column>
-                <template #default="{ $index }">
-                  <el-button size="small" type="danger" text @click="removeAction($index)">删除</el-button>
+                <template #default="{ row }">
+                  <el-button size="small" type="danger" text @click.stop="removeAction(origIdx(row))">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -285,7 +296,7 @@
             <el-col :span="8"><el-form-item label="日期"><el-input v-model="meta.topic_date" placeholder="2022-09-12"></el-input></el-form-item></el-col>
             <el-col :span="6"><el-form-item label="版本号"><el-input v-model="version" placeholder="1.0"></el-input></el-form-item></el-col>
             <el-col :span="12"><el-form-item label="话题链接"><el-input v-model="meta.topic_url" placeholder="https://..."></el-input></el-form-item></el-col>
-            <el-col :span="6"><el-form-item label="标签"><el-input v-model="meta.topic_tags" placeholder="逗号分隔: pov,blowjob"></el-input></el-form-item></el-col>
+            <el-col :span="6"><el-form-item label="标签"><el-input v-model="meta.topic_tags" placeholder="逗号分隔：pov,blowjob"></el-input></el-form-item></el-col>
           </el-row>
         </el-form>
       </el-card>
@@ -310,9 +321,9 @@
       <el-card shadow="never" class="mb8">
         <template #header><b>Canvas 缩放设置</b></template>
         <el-form label-width="140px" style="max-width:640px;">
-          <el-form-item label="默认最大显示范围 (秒)">
-            <el-input-number v-model="settings.zoomMin" :min="1" :step="1" size="small" style="width:200px;"></el-input-number>
-            <div class="hint" style="font-size:10px;color:#909399;margin-top:4px;">表格只显示最近 N 秒的动作，提升性能（Canvas 始终显示完整波形）。滚轮缩放最小为 0.1 秒</div>
+          <el-form-item label="默认最大显示范围 (ms)">
+            <el-input-number v-model="settings.zoomMin" :min="100" :step="1" size="small" style="width:200px;"></el-input-number>
+            <div class="hint" style="font-size:10px;color:#909399;margin-top:4px;">表格只显示最近 N ms 的动作，提升性能（Canvas 始终显示完整波形）。滚轮缩放最小为 50ms</div>
           </el-form-item>
         </el-form>
         <div style="margin-top:8px;">
@@ -327,7 +338,7 @@
             <el-input v-model="settings.host" placeholder="http://127.0.0.1:9080 或 http://192.168.1.100:4695"></el-input>
           </el-form-item>
           <el-form-item label="API Key">
-            <el-input v-model="settings.apiKey" placeholder="应用「设置 → 远程控制」中查看" show-password></el-input>
+            <el-input v-model="settings.apiKey" placeholder="应用「设置→远程控制」中查看" show-password></el-input>
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="testConnection">测试连接</el-button>
@@ -348,7 +359,7 @@
             </el-select>
           </el-form-item>
           <el-form-item>
-            <span class="hint" style="margin:0;">右键浏览器工具栏中的插件图标可打开本页面(Settings)或在当前页面弹出关联面板(关联)。面板内的位置按钮会同步修改此默认值。</span>
+            <span class="hint" style="margin:0;">右键浏览器工具栏中的插件图标可打开本页面 (Settings) 或在当前页面弹出关联面板 (关联)。面板内的位置按钮会同步修改此默认值。</span>
           </el-form-item>
         </el-form>
       </el-card>
@@ -377,53 +388,47 @@
       <el-form-item label="启用" required>
         <el-checkbox v-model="editingRuleGroupEnabled">启用该规则组</el-checkbox>
       </el-form-item>
-      
+
       <!-- 监控器列表 -->
       <el-divider content-position="left">监控器配置（DOM 元素）</el-divider>
-      
+
       <!-- 监控器卡片列表 -->
       <div v-if="editingRuleGroupMonitors.length > 0" style="width:100%;">
         <div v-for="(m, i) in editingRuleGroupMonitors" :key="m.id" class="mon-card">
           <el-row :gutter="8">
             <el-col :span="5"><el-checkbox v-model="m.enabled">启用</el-checkbox></el-col>
             <el-col :span="14">
-              <el-select v-model="m.type" @change="onMonTypeChange(m)">
-                <el-option label="监控 DOM 元素" value="dom"></el-option>
-              </el-select>
+              <el-row :gutter="8">
+                <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">选择</el-col>
+                <el-col :span="19"><el-input v-model="m.selector" placeholder="CSS 选择器，如 .page-num"></el-input></el-col>
+              </el-row>
+              <el-row :gutter="8">
+                <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">监控</el-col>
+                <el-col :span="8">
+                  <el-select v-model="m.observe">
+                    <el-option label="元素文本 (text)" value="text"></el-option>
+                    <el-option label="元素属性 (attr)" value="attr"></el-option>
+                  </el-select>
+                </el-col>
+              </el-row>
+              <el-row :gutter="8" v-if="m.observe === 'attr'">
+                <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">属性名</el-col>
+                <el-col :span="14"><el-input v-model="m.attrName" placeholder="如 data-page / title"></el-input></el-col>
+              </el-row>
             </el-col>
             <el-col :span="5" style="text-align:right;">
               <el-button size="small" type="danger" text @click="editingRuleGroupMonitors.splice(i, 1)">✕</el-button>
             </el-col>
           </el-row>
-          
-          <el-row :gutter="8">
-            <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">选择</el-col>
-            <el-col :span="19"><el-input v-model="m.selector" placeholder="CSS 选择器，如 .page-num"></el-input></el-col>
-          </el-row>
-          
-          <el-row :gutter="8">
-            <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">监控</el-col>
-            <el-col :span="8">
-              <el-select v-model="m.observe">
-                <el-option label="元素文本 (text)" value="text"></el-option>
-                <el-option label="元素属性 (attr)" value="attr"></el-option>
-              </el-select>
-            </el-col>
-          </el-row>
-          
-          <el-row :gutter="8" v-if="m.observe === 'attr'">
-            <el-col :span="5" style="text-align:right;font-size:12px;color:#909399;line-height:32px;">属性名</el-col>
-            <el-col :span="14"><el-input v-model="m.attrName" placeholder="如 data-page / title"></el-input></el-col>
-          </el-row>
-          
+
           <div style="display:flex;gap:8px;margin-top:6px;">
             <el-button size="small" type="primary" plain @click="addDomainRuleGroupMonitor">+ 添加监控器</el-button>
           </div>
-          
-          <div class="hint" style="margin-top:6px;font-size:10px;">监控器只定义观察目标（选择器 / URL），条件判断和触发在「关联脚本」的触发器里配置</div>
+
+          <div class="hint" style="margin-top:6px;font-size:10px;">监控器只定义观察目标（选择器/URL），条件判断和触发在「关联脚本」的触发器里配置</div>
         </div>
       </div>
-      
+
       <!-- 空状态和添加按钮 -->
       <el-empty v-else description="暂无监控器" :image-style="{width: '150px', height: '150px'}"></el-empty>
       <div style="text-align:center;margin-top:20px;">
@@ -522,10 +527,10 @@
       <span class="wg-label">扰动 ±</span>
       <el-input-number v-model="pulseVariation" :min="1" :max="100" size="small" :controls="false" style="width:60px"></el-input-number>
     </div>
-    <div class="hint" style="margin-bottom:4px;">强度(0-100)→位置pos；每个元 = 100/rate ms；频率信息无法映射到 funscript，将被忽略。
+    <div class="hint" style="margin-bottom:4px;">强度 (0-100)→位置 pos；每个元 = 100/rate ms；频率信息无法映射到 funscript，将被忽略。
       开启"打破平段"后，连续 ≥3 个 pos 相同的区域会注入 ±{{ pulseVariation }} 交替扰动，确保 Funscript 有速度输出。</div>
     <el-input type="textarea" :rows="10" v-model="pulseText"
-              placeholder="粘贴 .pulse 文件内容，例如: Dungeonlab+pulse:0,1,16=59,20,39,1,1/100.00-1,100.00-1+section+..."></el-input>
+              placeholder="粘贴 .pulse 文件内容，例如：Dungeonlab+pulse:0,1,16=59,20,39,1,1/100.00-1,100.00-1+section+..."></el-input>
     <template #footer>
       <el-button @click="pulseDialogVisible = false">取消</el-button>
       <el-button type="primary" @click="doImportPulse">转换并追加到当前事件</el-button>
@@ -533,7 +538,11 @@
   </el-dialog>
 </div>
 
+<!-- 桥接脚本必须先加载，暴露 HFES_BROKER 供 options.js 使用 -->
+<script src="broker.js"></script>
+<!-- wave-editor-core.js（核心功能）-->
 <script src="wave-editor-core.js"></script>
+<!-- options.js（包含 Vue 应用逻辑）在 broker.js 和 wave-editor-core.js 之后加载 -->
 <script src="options.js"></script>
 </body>
 </html>

@@ -6,7 +6,7 @@
 
   // ========== 全局配置（导出到全局 API）==========
   const CONFIG = {
-    defaultZoomMin: 10000,  // 默认显示最近 10 秒的数据（单位：ms）
+    defaultZoomMin: 500,  // 默认显示最近 0.5 秒的数据（单位：ms）
     zoomStep: 0.1           // 滚轮缩放步长（10%）
   };
 
@@ -33,9 +33,9 @@
   /**
    * 计算视图时间范围（ms）
    * @param {{at:number,pos:number}[]} actions
-   * @param {number} zoomMin 最小缩放级别 (默认 10000ms = 10 秒)
+   * @param {number} zoomMin 最小缩放级别 (默认 100ms = 0.1 秒)
    * @returns {number} 至少 zoomMin ms，向上取整到 100ms 倍数
-   */
+  */
   function viewMs(actions, zoomMin = CONFIG.defaultZoomMin) {
     if (!actions || !actions.length) return zoomMin;
     const maxAt = Math.max(...actions.map(a => a.at || 0));
@@ -49,12 +49,13 @@
    * @param {HTMLCanvasElement} canvas
    * @param {number} vm viewMs
    */
-  function toData(evt, canvas, vm) {
+  function toData(evt, canvas, vm, offsetMs) {
+    offsetMs = offsetMs || 0;
     const rect = canvas.getBoundingClientRect();
     const x = evt.clientX - rect.left;
     const y = evt.clientY - rect.top;
     return {
-      ms: clamp(x / rect.width, 0, 1) * vm,
+      ms: clamp(x / rect.width, 0, 1) * vm + offsetMs,
       pos: (1 - clamp(y / rect.height, 0, 1)) * 100,
       x, y
     };
@@ -64,12 +65,13 @@
    * 找离 (x,y) 最近的数据点
    * @returns {{idx:number, dist:number}}
    */
-  function nearestPoint(actions, canvas, x, y, vm) {
+  function nearestPoint(actions, canvas, x, y, vm, offsetMs) {
     if (!actions || !actions.length) return { idx: -1, dist: Infinity };
+    offsetMs = offsetMs || 0;
     const rect = canvas.getBoundingClientRect();
     let best = { idx: -1, dist: Infinity };
     actions.forEach((a, i) => {
-      const px = a.at / vm * rect.width;
+      const px = (a.at - offsetMs) / vm * rect.width;
       const py = (1 - a.pos / 100) * rect.height;
       const d = Math.hypot(px - x, py - y);
       if (d < best.dist) best = { idx: i, dist: d };
@@ -103,8 +105,14 @@
     ctx.clearRect(0, 0, w, h);
 
     const vm = opts.vm != null ? opts.vm : viewMs(actions);
-    const X = ms => ms / vm * w;
-    const Y = pos => (1 - pos / 100) * h;
+    const offsetMs = opts.offsetMs || 0;
+    // 添加 5% 的 padding，避免绘制贴边
+    const paddingX = w * 0.05;  // 左右各 5%
+    const paddingY = h * 0.05;  // 上下各 5%
+
+    // 修改 X/Y 映射函数，包含 padding
+    const X = ms => (ms - offsetMs) / vm * w + paddingX;
+    const Y = pos => (1 - pos / 100) * h - paddingY;
 
     // 背景网格
     ctx.strokeStyle = '#e4e7ed';
@@ -112,10 +120,14 @@
     ctx.font = '10px sans-serif';
     ctx.lineWidth = 1;
     const secStep = vm > 60000 ? 10 : (vm > 20000 ? 5 : 1);
-    for (let s = 0; s <= vm / 1000; s += secStep) {
+    const startSec = Math.ceil(offsetMs / 1000);
+    const endSec = Math.floor((offsetMs + vm) / 1000);
+    for (let s = startSec; s <= endSec; s += secStep) {
       const x = X(s * 1000);
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-      ctx.fillText(s + 's', x + 2, h - 4);
+      if (x >= 0 && x <= w) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+        ctx.fillText(s + 's', x + 2, h - 4);
+      }
     }
     [0, 25, 50, 75, 100].forEach(p => {
       const y = Y(p);
@@ -136,10 +148,21 @@
 
       // 数据点
       actions.forEach((a, i) => {
+        const r = i === opts.dragIdx ? 6 : (i === opts.highlightIdx ? 7 : 4);
         ctx.beginPath();
-        ctx.arc(X(a.at), Y(a.pos), i === opts.dragIdx ? 6 : 4, 0, Math.PI * 2);
-        ctx.fillStyle = i === opts.dragIdx ? '#e6a23c' : '#409eff';
+        ctx.arc(X(a.at), Y(a.pos), r, 0, Math.PI * 2);
+        if (i === opts.dragIdx) ctx.fillStyle = '#e6a23c';
+        else if (i === opts.highlightIdx) ctx.fillStyle = '#f56c6c';
+        else ctx.fillStyle = '#409eff';
         ctx.fill();
+        // 高亮节点加外环
+        if (i === opts.highlightIdx) {
+          ctx.strokeStyle = '#f56c6c';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(X(a.at), Y(a.pos), 10, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       });
     }
 
@@ -193,7 +216,7 @@
     let dragIdx = -1;
     let selStartX = 0, selStartY = 0, selCurX = 0, selCurY = 0;
     let isRightClick = false, isRightSelecting = false;
-    
+
     // 缩放相关状态
     let lastScale = 1;
     let currentZoomMin = CONFIG.defaultZoomMin;
@@ -203,35 +226,7 @@
 
     function getVm() { return cfg.getViewMs ? cfg.getViewMs() : viewMs(cfg.getActions(), currentZoomMin); }
     function redraw() { cfg.onChange && cfg.onChange(); }
-    
-    /**
-     * 滚轮缩放处理
-     */
-    const onWheel = function (e) {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const canvas = cfg.getCanvas();
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        
-        // 计算缩放中心点的数据坐标
-        const vmBefore = getVm();
-        const centerMsBefore = (x / rect.width) * vmBefore;
-        
-        // 滚轮灵敏度：10% 每步
-        const scaleDelta = e.deltaY > 0 ? 0.9 : 1.1;
-        lastScale = Math.max(0.1, Math.min(5, lastScale * scaleDelta));
-        
-        // 计算新的 viewMs，保持缩放中心点不变
-        const vmAfter = centerMsBefore / ((x / rect.width) * lastScale);
-        currentZoomMin = Math.max(100, vmAfter);
-        
-        console.log('zoom: lastScale:', lastScale, 'currentZoomMin:', currentZoomMin, 'vmAfter:', vmAfter);
-        redraw();
-      }
-    };
-    
+
     /**
      * 触摸缩放处理（双指缩放）
      */
@@ -249,7 +244,7 @@
         e.preventDefault();
       }
     };
-    
+
     const onTouchMove = function (e) {
       if (e.touches.length === 2 && isPinching) {
         const touch1 = e.touches[0];
@@ -259,29 +254,29 @@
         const dx2 = touch2.clientX - touch2.clientY;
         const dy2 = touch2.clientX + touch2.clientY;
         const currentDist = Math.hypot(dx2 - dx1, dy2 - dy1);
-        
+
         if (touchStartDist > 5) {
           const scaleRatio = currentDist / touchStartDist;
           lastScale = Math.max(0.1, Math.min(5, touchStartScale * scaleRatio));
-          
+
           // 计算缩放中心点，保持内容居中
           const canvas = cfg.getCanvas();
           const rect = canvas.getBoundingClientRect();
           const centerX = (touch1.clientX + touch2.clientX) / 2;
           const centerY = (touch1.clientY + touch2.clientY) / 2;
-          
+
           const vmBefore = viewMs(cfg.getActions(), currentZoomMin);
           const centerMsBefore = ((centerX - rect.left) / rect.width) * vmBefore;
-          
+
           const vmAfter = centerMsBefore / (((centerX - rect.left) / rect.width) * newScale);
           currentZoomMin = Math.max(100, vmAfter);
-          
+
           redraw();
         }
         e.preventDefault();
       }
     };
-    
+
     const onTouchEnd = function (e) {
       if (e.touches.length < 2) {
         isPinching = false;
@@ -363,10 +358,10 @@
 
     const onContextMenu = function (e) { e.preventDefault(); };
 
-    return { 
-      onPointerDown, 
-      onPointerMove, 
-      onPointerUp, 
+    return {
+      onPointerDown,
+      onPointerMove,
+      onPointerUp,
       onContextMenu,
       onWheel,
       onTouchStart,
@@ -444,61 +439,89 @@
 
   const SMALL_AMT = 0.00001;
   const GEN_WAVE_SHAPES = {
-    gw_fangs: { interp: 'LINEAR', points: [
-      { t: 0.0, p: 0.0 }, { t: 0.35, p: 1.0 },
-      { t: 0.5, p: 0.5 }, { t: 0.65, p: 1.0 } ] },
-    gw_curvy_triangle: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.5, p: 1.0, m: 0.0 } ] },
-    gw_curvy_fangs: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.35, p: 1.0, m: 0.0 },
-      { t: 0.5, p: 0.5, m: 0.0 }, { t: 0.65, p: 1.0, m: 0.0 } ] },
-    gw_curvy_trapezium: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.4, p: 0.95, m: 0.1 },
-      { t: 0.6, p: 0.95, m: -0.1 } ] },
-    gw_gentle_attack: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.75, p: 1.0, m: 0.0 } ] },
-    gw_fast_attack: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.25, p: 1.0, m: 0.0 } ] },
-    gw_faster_attack: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.15, p: 1.0, m: 0.0 } ] },
-    gw_rising_tide: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.1, p: 0.4, m: 0.0 },
-      { t: 0.2, p: 0.2, m: 0.0 }, { t: 0.3, p: 0.6, m: 0.0 },
-      { t: 0.4, p: 0.4, m: 0.0 }, { t: 0.5, p: 0.8, m: 0.0 },
-      { t: 0.6, p: 0.6, m: 0.0 }, { t: 0.7, p: 1.0, m: 0.0 },
-      { t: 0.8, p: 0.8, m: 0.0 } ] },
-    gw_flourish: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.5, p: 0.8, m: -0.6 },
-      { t: 0.66, p: 0.6, m: 0.3 }, { t: 0.86, p: 1.0, m: 0.0 },
-      { t: 0.9, p: 1.0, m: 0.0 } ] },
-    gw_jelly: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.2, p: 1.0, m: 0.0 },
-      { t: 0.3, p: 0.7, m: 0.0 }, { t: 0.4, p: 1.0, m: 0.0 },
-      { t: 0.5, p: 0.7, m: 0.0 }, { t: 0.6, p: 1.0, m: 0.0 },
-      { t: 0.7, p: 0.7, m: 0.0 }, { t: 0.8, p: 1.0, m: 0.0 } ] },
-    gw_tap_slide: { interp: 'LINEAR', points: [
-      { t: 0.0, p: 1.0 }, { t: 0.1 - SMALL_AMT, p: 1.0 },
-      { t: 0.1, p: 0.0 }, { t: 0.2 - SMALL_AMT, p: 0.0 },
-      { t: 0.2, p: 1.0 }, { t: 0.3 - SMALL_AMT, p: 1.0 },
-      { t: 0.3, p: 0.0 }, { t: 0.4 - SMALL_AMT, p: 0.0 },
-      { t: 0.4, p: 1.0 }, { t: 0.5, p: 1.0 },
-      { t: 1.0 - SMALL_AMT, p: 0.0 } ] },
-    gw_double_time: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.25, p: 1.0, m: 0.0 },
-      { t: 0.5, p: 0.0, m: 0.0 }, { t: 0.625, p: 1.0, m: 0.0 },
-      { t: 0.75, p: 0.0, m: 0.0 }, { t: 0.875, p: 1.0, m: 0.0 } ] },
-    gw_triple_trouble: { interp: 'HERMITE', points: [
-      { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.10, p: 0.98, m: 0.05 },
-      { t: 0.14, p: 1.0, m: 0.0 }, { t: 0.28, p: 0.0, m: 0.0 },
-      { t: 0.38, p: 0.98, m: 0.05 }, { t: 0.42, p: 1.0, m: 0.0 },
-      { t: 0.56, p: 0.0, m: 0.0 }, { t: 0.66, p: 0.98, m: 0.05 },
-      { t: 0.70, p: 1.0, m: 0.0 }, { t: 0.84, p: 0.0, m: 0.0 } ] },
-    gw_steps: { interp: 'LINEAR', points: [
-      { t: 0.0, p: 0.0 }, { t: 0.2 - SMALL_AMT, p: 0.0 },
-      { t: 0.2, p: 0.25 }, { t: 0.4 - SMALL_AMT, p: 0.25 },
-      { t: 0.4, p: 0.5 }, { t: 0.6 - SMALL_AMT, p: 0.5 },
-      { t: 0.6, p: 0.75 }, { t: 0.8 - SMALL_AMT, p: 0.75 },
-      { t: 0.8, p: 1.0 }, { t: 1.0 - SMALL_AMT, p: 1.0 } ] }
+    gw_fangs: {
+      interp: 'LINEAR', points: [
+        { t: 0.0, p: 0.0 }, { t: 0.35, p: 1.0 },
+        { t: 0.5, p: 0.5 }, { t: 0.65, p: 1.0 }]
+    },
+    gw_curvy_triangle: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.5, p: 1.0, m: 0.0 }]
+    },
+    gw_curvy_fangs: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.35, p: 1.0, m: 0.0 },
+        { t: 0.5, p: 0.5, m: 0.0 }, { t: 0.65, p: 1.0, m: 0.0 }]
+    },
+    gw_curvy_trapezium: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.4, p: 0.95, m: 0.1 },
+        { t: 0.6, p: 0.95, m: -0.1 }]
+    },
+    gw_gentle_attack: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.75, p: 1.0, m: 0.0 }]
+    },
+    gw_fast_attack: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.25, p: 1.0, m: 0.0 }]
+    },
+    gw_faster_attack: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.15, p: 1.0, m: 0.0 }]
+    },
+    gw_rising_tide: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.1, p: 0.4, m: 0.0 },
+        { t: 0.2, p: 0.2, m: 0.0 }, { t: 0.3, p: 0.6, m: 0.0 },
+        { t: 0.4, p: 0.4, m: 0.0 }, { t: 0.5, p: 0.8, m: 0.0 },
+        { t: 0.6, p: 0.6, m: 0.0 }, { t: 0.7, p: 1.0, m: 0.0 },
+        { t: 0.8, p: 0.8, m: 0.0 }]
+    },
+    gw_flourish: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.5, p: 0.8, m: -0.6 },
+        { t: 0.66, p: 0.6, m: 0.3 }, { t: 0.86, p: 1.0, m: 0.0 },
+        { t: 0.9, p: 1.0, m: 0.0 }]
+    },
+    gw_jelly: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.2, p: 1.0, m: 0.0 },
+        { t: 0.3, p: 0.7, m: 0.0 }, { t: 0.4, p: 1.0, m: 0.0 },
+        { t: 0.5, p: 0.7, m: 0.0 }, { t: 0.6, p: 1.0, m: 0.0 },
+        { t: 0.7, p: 0.7, m: 0.0 }, { t: 0.8, p: 1.0, m: 0.0 }]
+    },
+    gw_tap_slide: {
+      interp: 'LINEAR', points: [
+        { t: 0.0, p: 1.0 }, { t: 0.1 - SMALL_AMT, p: 1.0 },
+        { t: 0.1, p: 0.0 }, { t: 0.2 - SMALL_AMT, p: 0.0 },
+        { t: 0.2, p: 1.0 }, { t: 0.3 - SMALL_AMT, p: 1.0 },
+        { t: 0.3, p: 0.0 }, { t: 0.4 - SMALL_AMT, p: 0.0 },
+        { t: 0.4, p: 1.0 }, { t: 0.5, p: 1.0 },
+        { t: 1.0 - SMALL_AMT, p: 0.0 }]
+    },
+    gw_double_time: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.25, p: 1.0, m: 0.0 },
+        { t: 0.5, p: 0.0, m: 0.0 }, { t: 0.625, p: 1.0, m: 0.0 },
+        { t: 0.75, p: 0.0, m: 0.0 }, { t: 0.875, p: 1.0, m: 0.0 }]
+    },
+    gw_triple_trouble: {
+      interp: 'HERMITE', points: [
+        { t: 0.0, p: 0.0, m: 0.0 }, { t: 0.10, p: 0.98, m: 0.05 },
+        { t: 0.14, p: 1.0, m: 0.0 }, { t: 0.28, p: 0.0, m: 0.0 },
+        { t: 0.38, p: 0.98, m: 0.05 }, { t: 0.42, p: 1.0, m: 0.0 },
+        { t: 0.56, p: 0.0, m: 0.0 }, { t: 0.66, p: 0.98, m: 0.05 },
+        { t: 0.70, p: 1.0, m: 0.0 }, { t: 0.84, p: 0.0, m: 0.0 }]
+    },
+    gw_steps: {
+      interp: 'LINEAR', points: [
+        { t: 0.0, p: 0.0 }, { t: 0.2 - SMALL_AMT, p: 0.0 },
+        { t: 0.2, p: 0.25 }, { t: 0.4 - SMALL_AMT, p: 0.25 },
+        { t: 0.4, p: 0.5 }, { t: 0.6 - SMALL_AMT, p: 0.5 },
+        { t: 0.6, p: 0.75 }, { t: 0.8 - SMALL_AMT, p: 0.75 },
+        { t: 0.8, p: 1.0 }, { t: 1.0 - SMALL_AMT, p: 1.0 }]
+    }
   };
 
   function hermite01(t, t0, p0, m0, t1, p1, m1) {
