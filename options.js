@@ -54,16 +54,22 @@ async function setStore(patch) {
 
 
 const SAMPLE = {
-  metadata: { title: "漫画", duration: 162, durationTime: "00:02:42.000",
+  metadata: {
+    title: "漫画", duration: 162, durationTime: "00:02:42.000",
     topic_url: "https://discuss.eroscripts.com/t/75758",
-    topic_tags: ["osr2", "multi-axis", "blowjob"], topic_creator: "", topic_date: "2022-09-12" },
+    topic_tags: ["osr2", "multi-axis", "blowjob"], topic_creator: "", topic_date: "2022-09-12"
+  },
   events: [
-    { id: "page1", metadata: { title: "第一页", duration: 3, durationTime: "00:00:03.081", loop: true },
-      actions: [ { at: 7402, pos: 100 }, { at: 7963, pos: 72 }, { at: 8483, pos: 100 }, { at: 8716, pos: 90 },
-                 { at: 8923, pos: 50 }, { at: 9363, pos: 100 }, { at: 9676, pos: 90 }, { at: 10003, pos: 50 }, { at: 10483, pos: 100 } ] },
-    { id: "page2", metadata: { title: "第二页", duration: 2, durationTime: "00:00:42.633", loop: true },
-      actions: [ { at: 8323, pos: 48 }, { at: 8703, pos: 68 }, { at: 9083, pos: 58 }, { at: 9683, pos: 73 },
-                 { at: 10083, pos: 54 }, { at: 10203, pos: 48 }, { at: 10956, pos: 68 } ] }
+    {
+      id: "page1", metadata: { title: "第一页", duration: 3, durationTime: "00:00:03.081", loop: true },
+      actions: [{ at: 7402, pos: 100 }, { at: 7963, pos: 72 }, { at: 8483, pos: 100 }, { at: 8716, pos: 90 },
+      { at: 8923, pos: 50 }, { at: 9363, pos: 100 }, { at: 9676, pos: 90 }, { at: 10003, pos: 50 }, { at: 10483, pos: 100 }]
+    },
+    {
+      id: "page2", metadata: { title: "第二页", duration: 2, durationTime: "00:00:42.633", loop: true },
+      actions: [{ at: 8323, pos: 48 }, { at: 8703, pos: 68 }, { at: 9083, pos: 58 }, { at: 9683, pos: 73 },
+      { at: 10083, pos: 54 }, { at: 10203, pos: 48 }, { at: 10956, pos: 68 }]
+    }
   ],
   version: "1.0"
 };
@@ -79,6 +85,7 @@ createApp({
       allowedHosts: [],
       zoomMin: 500        // 默认最大显示范围 (ms)
     });
+    const displayRangeMs = ref(settings.zoomMin);  // 当前显示范围（从末尾开始，单位 ms）
 
     // 从 store 加载保存的 settings（通过 broker.js 桥接）
     onMounted(async () => {
@@ -87,6 +94,10 @@ createApp({
         console.log('[options] 加载设置:', stored.settings);
         if (stored.settings && stored.settings.zoomMin !== undefined) {
           settings.zoomMin = stored.settings.zoomMin;
+          displayRangeMs.value = settings.zoomMin;
+          console.log('[options] 使用已保存的 zoomMin:', settings.zoomMin, 'ms');
+        } else {
+          console.log('[options] 使用默认 zoomMin:', settings.zoomMin, 'ms');
         }
       } catch (e) {
         console.warn('[options] 加载设置失败:', e);
@@ -99,7 +110,7 @@ createApp({
 
     // ---- 监听网站白名单 ----
     const allowedHostsSaved = ref(false);
-    
+
     // Canvas 缩放设置
     const zoomMinSaved = ref(false);
     const allowedHostsText = computed({
@@ -109,7 +120,7 @@ createApp({
       }
     });
     function saveAllowedHosts() {
-       console.log("saveAllowedHosts")
+      console.log("saveAllowedHosts")
       persistSettings();
       allowedHostsSaved.value = true;
       setTimeout(() => { allowedHostsSaved.value = false; }, 2000);
@@ -263,12 +274,12 @@ createApp({
 
     // 辅助函数：从模板中添加监控器到域名规则组编辑列表
     function addDomainRuleGroupMonitor() {
-      editingRuleGroupMonitors.value.push({ 
-        id: uuid(), 
-        enabled: true, 
-        type: 'dom', 
-        observe: 'text', 
-        selector: '', 
+      editingRuleGroupMonitors.value.push({
+        id: uuid(),
+        enabled: true,
+        type: 'dom',
+        observe: 'text',
+        selector: '',
         attrName: ''
       });
     }
@@ -429,7 +440,7 @@ createApp({
     const assocTriggers = ref([]);
     const editingId = ref(null);
     const editingName = ref('');
-    
+
     const assocEventIds = computed(() => {
       const s = scripts.value.find(x => x.id === assocScriptId.value);
       if (!s) return [];
@@ -455,7 +466,7 @@ createApp({
       // 用上一个触发器做模板（清空 value，eventId 自动设为第一个未占用的）
       const last = assocTriggers.value[assocTriggers.value.length - 1];
       const base = last ? { enabled: last.enabled !== false, monitorId: last.monitorId || '', match: last.match || 'equals' }
-                        : { enabled: true, monitorId: '', match: 'equals' };
+        : { enabled: true, monitorId: '', match: 'equals' };
       // 找第一个未被当前 triggers 占用的 eventId
       const usedIds = new Set(assocTriggers.value.map(t => t.eventId).filter(Boolean));
       const allIds = assocEventIds.value;
@@ -508,6 +519,16 @@ createApp({
 
     function eventMaxAt(ev) { return ev.actions.length ? Math.max(...ev.actions.map(a => a.at)) : 0; }
 
+    // 查找第一个有效数据的起点
+    function getFirstActionAt(ev) {
+      if (!ev || !ev.actions.length) return 0;
+      let firstAt = Infinity;
+      ev.actions.forEach(a => {
+        if (a.at < firstAt) firstAt = a.at;
+      });
+      return firstAt > 0 ? firstAt : 0;
+    }
+
     function normalize(i) {
       const ev = events[i]; if (!ev) return;
       if (Core) Core.normalize(ev.actions);
@@ -538,13 +559,40 @@ createApp({
     function sortDedupe(i) { normalize(i); }
     function invert(i) { events[i].actions.forEach(a => a.pos = 100 - a.pos); }
 
-    // 过滤后的动作列表（只显示最近 displayRangeMs 的动作）
+    // 过滤后的动作列表（显示当前视图范围内的动作）
     const filteredActions = computed(() => {
       const ev = activeEvent.value;
       if (!ev) return [];
-      const startMs = scrollOffsetMs.value;
-      const endMs = scrollOffsetMs.value + displayRangeMs.value;
-      return ev.actions.filter(a => a.at >= startMs && a.at <= endMs);
+      const maxAt = eventMaxAt(ev);
+      
+      // 计算当前视图的 offsetMs，确保与 Core.draw 一致
+      let offsetMs;
+      if (scrollOffsetMs.value === 0 && !isScrollDragging) {
+        // 初始加载时，从第一个数据点开始
+        offsetMs = getFirstActionAt(ev);
+      } else {
+        // 用户操作后，使用 scrollOffsetMs
+        offsetMs = Math.max(getFirstActionAt(ev), Math.min(scrollOffsetMs.value, maxAt - displayRangeMs.value));
+      }
+      
+      const startMs = offsetMs;
+      const endMs = Math.min(maxAt, offsetMs + displayRangeMs.value);
+      
+      console.log(`[filteredActions] 裁剪范围：${startMs}ms ~ ${endMs}ms (offsetMs: ${offsetMs})`);
+      
+      // 添加调试日志，显示第一个和最后一个节点的 at 值
+      if (ev.actions.length > 0) {
+        const firstAt = getFirstActionAt(ev);
+        console.log(`[filteredActions] all actions: firstAt=${firstAt}, maxAt=${maxAt}`);
+      }
+      
+      const beforeLen = ev.actions.length;
+      const filtered = ev.actions.filter(a => a.at >= startMs && a.at <= endMs);
+      const afterLen = filtered.length;
+      
+      console.log(`[filteredActions] 从 ${beforeLen} 个节点过滤到 ${afterLen} 个节点`);
+      
+      return filtered;
     });
 
     // 滚动条状态
@@ -595,7 +643,7 @@ createApp({
         ElMessage.warning('请输入至少 1 秒的时间范围');
         return;
       }
-      ElMessage.success(`已切换到最近 ${ms/1000} 秒的视图`);
+      ElMessage.success(`已切换到最近 ${ms / 1000} 秒的视图`);
     }
 
     // 获取 action 在原始数组中的索引
@@ -609,9 +657,113 @@ createApp({
     function onTableRowClick(row) {
       const ev = activeEvent.value;
       if (!ev || !ev.actions.length) return;
+      // 使用全数组索引（与 dragIdx 保持一致）
       highlightIdx.value = ev.actions.indexOf(row);
       draw();
     }
+
+    // 表格行高亮样式方法（使用 at+pos 匹配，不依赖索引）
+    const highlightedRowClass = (row, rowIndex) => {
+      // console.log(`[highlightedRowClass] row=${JSON.stringify(row)}, rowIndex=${rowIndex}, typeof row=${typeof row}`);
+      
+      if (!activeEvent || !activeEvent.value) {
+        // console.warn('[highlightedRowClass] activeEvent is null/undefined');
+        return '';
+      }
+      const ev = activeEvent.value;
+      if (!ev.actions || !Array.isArray(ev.actions)) {
+        // console.warn('[highlightedRowClass] ev.actions is not an array');
+        return '';
+      }
+      
+      // 通过 at+pos 查找高亮节点（不依赖索引）
+      let highlightedNode = null;
+      if (typeof highlightIdx.value === 'number' && highlightIdx.value >= 0 && highlightIdx.value < ev.actions.length) {
+        highlightedNode = ev.actions[highlightIdx.value];
+      }
+      
+      // 如果没有设置索引，尝试通过鼠标点击位置反向查找（可选）
+      if (!highlightedNode) {
+        // console.warn('[highlightedRowClass] Cannot determine highlighted node');
+        return '';
+      }
+      
+      // 确保 row 对象有 at 和 pos，尝试多种方式获取
+      let rowAt = row.at;
+      let rowPos = row.pos;
+      
+      if (rowAt === undefined) {
+        // Element Plus 表格有时会嵌套传递数据：{row: {at, pos}, rowIndex}
+        if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
+          rowAt = row.row.at;
+          rowPos = row.row.pos;
+        } else if (Array.isArray(row)) {
+          rowAt = row[0]?.at || row.at;
+        } else if (typeof row === 'object') {
+          rowAt = row['at'] || row.time || row.ms || undefined;
+        }
+      }
+      
+      if (rowPos === undefined) {
+        if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
+          rowPos = row.row.pos;
+        } else if (Array.isArray(row)) {
+          rowPos = row[0]?.pos || row.pos;
+        } else if (typeof row === 'object') {
+          rowPos = row['pos'] || row.position || row.y || undefined;
+        }
+      }
+      
+      // console.log(`[highlightedRowClass] Comparing row(at=${rowAt}, pos=${rowPos}) with highlighted(at=${highlightedNode.at}, pos=${highlightedNode.pos})`);
+      
+      // 比较 at 和 pos 是否匹配（允许微小误差）
+      const atDiff = Math.abs((rowAt || 0) - (highlightedNode.at || 0));
+      const posDiff = Math.abs((rowPos || 0) - (highlightedNode.pos || 0));
+      // console.log(`[highlightedRowClass] at diff=${atDiff}, pos diff=${posDiff}`);
+      
+      return (atDiff < 1 && posDiff < 1) ? 'table-row-highlight' : '';
+    };
+
+    // 滚动到指定的表格行（如果不在可视区域内）
+    const scrollToHighlightedRow = (node) => {
+      if (!node) return;
+      
+      console.log('[scrollToHighlightedRow] node:', node.at, node.pos);
+      
+      // 在 filteredActions 中查找匹配的节点
+      const targetIndex = filteredActions.value.findIndex(a => 
+        Math.abs((a.at || 0) - (node.at || 0)) < 1 &&
+        Math.abs((a.pos || 0) - (node.pos || 0)) < 1
+      );
+      
+      console.log('[scrollToHighlightedRow] targetIndex:', targetIndex);
+      
+      if (targetIndex >= 0) {
+        // 使用 nextTick 等待 DOM 更新后再滚动
+        nextTick(() => {
+          const table = document.querySelector('#actionsTable');
+          
+          if (table) {
+            const tbody = table.querySelector('tbody');
+            
+            if (tbody) {
+              const rows = Array.from(tbody.querySelectorAll('tr'));
+              
+              if (rows[targetIndex]) {
+                const targetRow = rows[targetIndex];
+                
+                // 使用 scrollIntoView 让行进入可视区域
+                targetRow.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+              } else {
+                console.warn('[scrollToHighlightedRow] target row not found at index', targetIndex);
+              }
+            }
+          }
+        });
+      } else {
+        console.warn('[scrollToHighlightedRow] no matching row found');
+      }
+    };
 
     const actionsTableRef = ref(null);
     const selectedActions = ref([]);
@@ -643,7 +795,7 @@ createApp({
         ev.actions = [];
         clearTableSelection();
         ElMessage.success('已清空');
-      }).catch(() => {});
+      }).catch(() => { });
     }
     function deleteByRange() {
       const ev = activeEvent.value; if (!ev) return;
@@ -829,31 +981,50 @@ createApp({
 
     const viewMs = computed(() => {
       const ev = activeEvent.value;
-      if (!ev || !ev.actions.length) return (typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000;
-      
-      // 默认显示最近 N ms 的数据（从末尾开始），与 inline-editor 保持一致
+      if (!ev || !ev.actions.length) return displayRangeMs.value;
+
+      // 始终使用 displayRangeMs 作为最大显示范围，如果脚本总时长超过它，则裁剪到最近 displayRangeMs
       const maxAt = eventMaxAt(ev);
-      const zoomMinMs = Math.max(settings.zoomMin, (typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000);
-      
-      // 如果总时长超过 zoomMin，则显示从末尾开始的最近 zoomMin 范围
-      return maxAt > settings.zoomMin ? zoomMinMs : maxAt;
+      const finalViewMs = Math.min(maxAt, displayRangeMs.value);
+
+      console.log(`[viewMs] maxAt: ${maxAt}, displayRangeMs: ${displayRangeMs.value}, viewMs: ${finalViewMs}`);
+
+      return finalViewMs;
     });
 
+    // 保存当前视图的 offsetMs，供 toData 和 nearestPoint 使用
+    let currentOffsetMs = scrollOffsetMs.value;
+
     function toData(evt) {
-      return Core ? Core.toData(evt, getCanvas(), displayRangeMs.value, scrollOffsetMs.value) : (() => {
+      return Core ? Core.toData(evt, getCanvas(), displayRangeMs.value, currentOffsetMs) : (() => {
         const rect = getCanvas().getBoundingClientRect();
         const x = evt.clientX - rect.left, y = evt.clientY - rect.top;
-        return { ms: clamp(x / rect.width, 0, 1) * displayRangeMs.value + scrollOffsetMs.value, pos: (1 - clamp(y / rect.height, 0, 1)) * 100, x, y };
+        return { ms: clamp(x / rect.width, 0, 1) * displayRangeMs.value + currentOffsetMs, pos: (1 - clamp(y / rect.height, 0, 1)) * 100, x, y };
       })();
     }
-    function nearestPoint(x, y) {
+    function nearestPoint(canvas, mouseX, mouseY) {
       const ev = activeEvent.value; if (!ev || !ev.actions.length) return { idx: -1, dist: Infinity };
-      if (Core) return Core.nearestPoint(ev.actions, getCanvas(), x, y, displayRangeMs.value, scrollOffsetMs.value);
-      const rect = getCanvas().getBoundingClientRect();
+      
+      // 使用实际显示的 offsetMs（与 Core.draw 一致）
+      const actualOffset = scrollOffsetMs.value === 0 && !isScrollDragging ? getFirstActionAt(ev) : Math.max(getFirstActionAt(ev), Math.min(scrollOffsetMs.value, eventMaxAt(ev) - displayRangeMs.value));
+      
+      if (Core) {
+        // 使用 Core.nearestPoint（已包含 padding 逻辑）
+        // mouseX, mouseY 是原始鼠标坐标（包含 padding）
+        return Core.nearestPoint(ev.actions, canvas, mouseX, mouseY, displayRangeMs.value, actualOffset);
+      }
+      
+      // fallback: fallback 到本地实现（与 draw 一致）
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width;
       let best = { idx: -1, dist: Infinity };
       ev.actions.forEach((a, i) => {
-        const px = (a.at - scrollOffsetMs.value) / displayRangeMs.value * rect.width, py = (1 - a.pos / 100) * rect.height;
-        const d = Math.hypot(px - x, py - y);
+        // 使用与 Core.draw 相同的 X/Y 映射公式（考虑 padding）
+        // mouseX, mouseY 是原始鼠标坐标，需要转换为数据坐标空间进行比较
+        const px = ((a.at - actualOffset) / displayRangeMs.value * width + (width * 0.05)), 
+              py = (1 - a.pos / 100) * rect.height - (rect.height * 0.05);
+        // 直接使用原始鼠标坐标与数据点映射坐标比较
+        const d = Math.hypot(mouseX - px, mouseY - py);
         if (d < best.dist) best = { idx: i, dist: d };
       });
       return best;
@@ -861,16 +1032,63 @@ createApp({
     function onPointerDown(e) {
       const ev = activeEvent.value; if (!ev) return;
       getCanvas().setPointerCapture(e.pointerId);
-      const { x, y, ms, pos } = toData(e);
+      const canvas = getCanvas();
+      const rect = canvas.getBoundingClientRect();
+      console.log(`[onPointerDown] mouse X=${e.clientX}, Y=${e.clientY}`);
+      
+      // 计算 padding（与 Core.draw 完全一致，使用 CSS 像素）
+      const paddingX = rect.width * 0.05;
+      const paddingY = rect.height * 0.05;
+      
+      // 将鼠标坐标转换为 canvas 坐标系（减去 padding）
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const clickX = mouseX > paddingX ? mouseX - paddingX : 0;
+      const clickY = mouseY > paddingY ? mouseY - paddingY : 0;
+      
+      console.log(`[onPointerDown] canvas X=${clickX}, Y=${clickY}, paddingX=${paddingX}, paddingY=${paddingY}`);
+      
+      const { ms, pos } = toData({ clientX: e.clientX, clientY: e.clientY });
+      console.log(`[onPointerDown] converted to data: ms=${ms}, pos=${pos}`);
+      
       if (e.button === 2) {
         selStartX = selCurX = x; selStartY = selCurY = y;
         isRightClick = true;
         isRightSelecting = false;
         return;
       }
-      const { idx, dist } = nearestPoint(x, y);
-      if (idx >= 0 && dist <= 12) { dragIdx = idx; }
-      else {
+      
+      // 计算节点位置时也要考虑 padding（与 Core.draw 一致）
+      // 使用原始鼠标坐标（包含 padding），与 nearestPoint 的坐标系统一致
+      const { idx, dist } = nearestPoint(canvas, mouseX, mouseY);
+      console.log(`[onPointerDown] nearestPoint: idx=${idx}, dist=${dist}`);
+      if (idx >= 0) {
+        const node = ev.actions[idx];
+        console.log(`[onPointerDown] selected node: at=${node.at}, pos=${node.pos}`);
+      }
+      if (idx >= 0 && dist <= 80) { 
+        dragIdx = idx;  // 点击节点后取消拖拽状态（不是拖动）
+        // canvas 点击节点时，同时设置 highlightIdx（与表格行点击逻辑一致）
+        const node = ev.actions[idx];
+        // 使用 at+pos 匹配找到 filteredActions 中的索引
+        const highlightedNode = filteredActions.value.find(fa => 
+          Math.abs((fa.at || 0) - (node.at || 0)) < 1 &&
+          Math.abs((fa.pos || 0) - (node.pos || 0)) < 1
+        );
+        if (highlightedNode) {
+          highlightIdx.value = ev.actions.indexOf(highlightedNode);
+        } else {
+          // 如果没有找到，使用全数组索引（兼容情况）
+          highlightIdx.value = idx;
+        }
+        
+        console.log(`[onPointerDown] highlightIdx set to: ${highlightIdx.value}`);
+        
+        // 滚动到可视区域（如果高亮行不在视图内）
+        scrollToHighlightedRow(node);
+        
+        draw();  // 重绘 canvas 显示高亮样式
+      } else {
         const p = { at: Math.round(ms), pos: Math.round(clamp(pos, 0, 100)) };
         ev.actions.push(p); sortDedupe(activeIndex.value);
         dragIdx = ev.actions.indexOf(p);
@@ -927,22 +1145,68 @@ createApp({
       const ev = activeEvent.value;
       const ctx = canvas.getContext('2d');
       if (Core) {
+        // 计算当前视图的 offsetMs，确保与 filteredActions 一致
+        const maxAt = eventMaxAt(ev);
+        
+        let actualOffsetMs;
+        if (scrollOffsetMs.value === 0 && !isScrollDragging) {
+          // 初始加载时，使用第一个数据点作为偏移量
+          console.log(`[draw] 初始视图：从 ${getFirstActionAt(ev)}ms 开始，显示最近 ${displayRangeMs.value}ms`);
+          actualOffsetMs = getFirstActionAt(ev);
+        } else {
+          // 用户操作后（滚动或拖拽），使用 scrollOffsetMs 作为偏移量
+          // 但需要确保 visible 数组与 offsetMs 和 displayRangeMs 匹配
+          console.log(`[draw] 滚动视图：scrollOffsetMs=${scrollOffsetMs.value}, maxAt=${maxAt}, displayRangeMs=${displayRangeMs.value}`);
+          
+          // 计算实际偏移量（与 filteredActions 的 startMs 一致）
+          const firstAt = getFirstActionAt(ev);
+          actualOffsetMs = Math.max(firstAt, Math.min(scrollOffsetMs.value, maxAt - displayRangeMs.value));
+        }
+        
+        console.log(`[draw] actualOffsetMs=${actualOffsetMs}, displayRangeMs=${displayRangeMs.value}`);
+        
         // 只绘制当前视图范围内的节点，与表格保持一致
         const visible = filteredActions.value;
-        // 将 dragIdx（全数组索引）转换为 filteredActions 中的索引
+        // 将 dragIdx（全数组索引）转换为 filteredActions 中的索引，如果没有找到则保持原值
         let visDragIdx = -1;
         if (dragIdx >= 0 && ev) {
           const dragged = ev.actions[dragIdx];
           visDragIdx = visible.indexOf(dragged);
+          console.log(`[draw] dragIdx=${dragIdx}, visDragIdx=${visDragIdx}, node: at=${dragged.at}, pos=${dragged.pos}`);
+        } else {
+          // 如果 dragIdx 不在 filtered 数组中，保持全数组索引传递给 Core.draw
+          console.log(`[draw] dragIdx=${dragIdx} not in visible, keeping full index`);
         }
+        
+        // highlight：将全数组索引转换为 filteredActions 的索引（当前视图可见的节点）
+        let visHighlightIdx = -1;
+        if (highlightIdx.value >= 0 && highlightIdx.value < ev.actions.length) {
+          const highlightedNode = ev.actions[highlightIdx.value];
+          console.log(`[draw] highlightIdx=${highlightIdx.value}, highlighted node: at=${highlightedNode.at}, pos=${highlightedNode.pos}`);
+          // 在 filteredActions 中查找该节点（使用 at+pos 匹配，因为对象引用可能变化）
+          visHighlightIdx = visible.findIndex(a => 
+            Math.abs((a.at || 0) - (highlightedNode.at || 0)) < 1 &&
+            Math.abs((a.pos || 0) - (highlightedNode.pos || 0)) < 1
+          );
+          console.log(`[draw] visHighlightIdx=${visHighlightIdx}`);
+        }
+        
+        // highlightAt/highlightPos：始终使用全数组索引对应的值（支持节点不在 visible 范围内）
+        const highlightAt = ev.actions[highlightIdx.value]?.at;
+        const highlightPos = ev.actions[highlightIdx.value]?.pos;
+        
         Core.draw(ctx, canvas, visible, {
-          dragIdx: visDragIdx,
-          highlightIdx: highlightIdx.value >= 0 ? visible.indexOf(ev.actions[highlightIdx.value]) : -1,
+          dragIdx: visDragIdx >= 0 ? visDragIdx : dragIdx,  // 如果找不到则保持全数组索引
+          dragAt: ev.actions[dragIdx]?.at,
+          dragPos: ev.actions[dragIdx]?.pos,
+          highlightIdx: visHighlightIdx,  // filteredActions 的索引（用于直接比较）
+          highlightAt: highlightAt,        // 全数组的 at 值（用于 at+pos 匹配）
+          highlightPos: highlightPos,      // 全数组的 pos 值
           playing: playing.value, playheadMs: playheadMs.value,
           isRightSelecting, selStartX, selStartY, selCurX, selCurY,
-          vm: displayRangeMs.value,
-          offsetMs: scrollOffsetMs.value
-        });
+            vm: displayRangeMs.value,
+            offsetMs: actualOffsetMs
+          });
         return;
       }
       // fallback 原始实现（core 未加载时用）
@@ -998,8 +1262,7 @@ createApp({
     function stopPlay() { playing.value = false; playheadMs.value = 0; if (rafId) cancelAnimationFrame(rafId); draw(); }
 
     // ========== 缩放功能 ==========
-    const displayRangeMs = ref((typeof CONFIG !== 'undefined' && CONFIG.defaultZoomMin) ? CONFIG.defaultZoomMin : 10000);  // 当前显示范围（从末尾开始）
-    // const displayRangeMs = ref(settings.zoomMin);  // 当前显示范围（从末尾开始，单位 ms）
+
 
     function onWheel(e) {
       // 始终阻止默认行为，防止页面滚动或 Canvas 缩放
@@ -1009,11 +1272,11 @@ createApp({
       if (e.ctrlKey || e.metaKey) {
         // Ctrl+滚轮：缩放 Canvas
         console.log('[sandbox] zoom: ctrlKey=', e.ctrlKey, 'deltaY=', e.deltaY);
-        
+
         const ev = activeEvent.value;
         if (!ev || !ev.actions.length) return;
         const maxAt = eventMaxAt(ev);
-        
+
         // 滚轮灵敏度：5% 每步
         const zoomFactor = 1.05;
         const scaleDelta = e.deltaY > 0 ? zoomFactor : 1 / zoomFactor;
@@ -1022,11 +1285,11 @@ createApp({
         // 限制范围：最小 50ms ~ 总时长
         newRange = Math.max(50, Math.min(newRange, maxAt || 50));
         displayRangeMs.value = newRange;
-        
+
         // 调整 scrollOffset，保持数据不超出范围
         const maxOffset = Math.max(0, maxAt - newRange);
         if (scrollOffsetMs.value > maxOffset) scrollOffsetMs.value = maxOffset;
-        
+
         console.log('sandbox zoom: scaleDelta:', scaleDelta.toFixed(4), 'new range:', Math.round(newRange), 'offset:', Math.round(scrollOffsetMs.value));
         draw();
       } else {
@@ -1043,7 +1306,7 @@ createApp({
         draw();
       }
     }
-    
+
     // 在 canvas 挂载后绑定事件
     onMounted(() => {
       const canvas = getCanvas();
@@ -1052,7 +1315,7 @@ createApp({
         // canvas.addEventListener('wheel', onWheel, { passive: false });
       }
     });
-    
+
     function onTouchStart(e) {
       if (e.touches.length === 2) {
         isPinching = true;
@@ -1066,7 +1329,7 @@ createApp({
         touchStartScale = lastScale.value;
       }
     }
-    
+
     function onTouchMove(e) {
       if (e.touches.length === 2 && isPinching) {
         const touch1 = e.touches[0];
@@ -1076,20 +1339,20 @@ createApp({
         const dx2 = touch2.clientX - touch2.clientY;
         const dy2 = touch2.clientX + touch2.clientY;
         const currentDist = Math.hypot(dx2 - dx1, dy2 - dy1);
-        
+
         if (touchStartDist > 5) {
           const scaleRatio = currentDist / touchStartDist;
-          
+
           // 直接修改 viewMs，基于当前值缩放
           viewMs.value *= scaleRatio;
-          
+
           console.log('sandbox touch zoom: scaleRatio:', scaleRatio.toFixed(4), 'new viewMs:', Math.round(viewMs.value));
-          
+
           draw();
         }
       }
     }
-    
+
     function onTouchEnd(e) {
       if (e.touches.length < 2) {
         isPinching = false;
@@ -1156,7 +1419,9 @@ createApp({
       pulseDialogVisible, pulseText, pulseFileRef, pulseBreakFlat, pulseVariation, triggerPulseFile, onPulseFile, doImportPulse,
       actionsTableRef, selectedActions, rangeDelStart, rangeDelEnd,
       onSelectionChange, deleteSelected, clearAllActions, deleteByRange,
-      onMainTabChange, saveZoomMin, zoomMinSaved
+      onMainTabChange, saveZoomMin, zoomMinSaved,
+      // 表格高亮样式方法（必须加入到 return 中才能被模板使用）
+      highlightedRowClass
     };
   }
 }).use(ElementPlus).mount('#app');

@@ -31,49 +31,86 @@
   }
 
   /**
-   * 计算视图时间范围（ms）
+   * 计算视图时间范围（ms）- 确保从第一个节点开始显示
    * @param {{at:number,pos:number}[]} actions
    * @param {number} zoomMin 最小缩放级别 (默认 100ms = 0.1 秒)
    * @returns {number} 至少 zoomMin ms，向上取整到 100ms 倍数
   */
   function viewMs(actions, zoomMin = CONFIG.defaultZoomMin) {
     if (!actions || !actions.length) return zoomMin;
+    const firstAt = Math.min(...actions.map(a => a.at || 0));
     const maxAt = Math.max(...actions.map(a => a.at || 0));
+    // 计算需要显示的总时间范围，从第一个节点开始到最大值
+    const range = maxAt - firstAt;
     // 向上取整到 100ms 倍数，但至少为 zoomMin
-    return Math.max(zoomMin, Math.ceil(maxAt / 100) * 100);
+    return Math.max(zoomMin, Math.ceil(range / 100) * 100);
   }
 
   /**
-   * canvas 像素坐标 → 数据坐标
+   * canvas 像素坐标 → 数据坐标（考虑 padding，与 draw 完全一致）
    * @param {PointerEvent} evt
    * @param {HTMLCanvasElement} canvas
    * @param {number} vm viewMs
    */
   function toData(evt, canvas, vm, offsetMs) {
     offsetMs = offsetMs || 0;
+    
+    // 计算 padding（与 draw 完全一致）
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const paddingX = w * 0.05;
+    const paddingY = h * 0.05;
+    
+    // 获取鼠标在 canvas 中的位置（CSS 像素）
     const rect = canvas.getBoundingClientRect();
     const x = evt.clientX - rect.left;
     const y = evt.clientY - rect.top;
+    
+    // 减去 padding，与 draw 的坐标系统一致
+    const clickX = x > paddingX ? x - paddingX : 0;
+    const clickY = y > paddingY ? y - paddingY : 0;
+    
+    // 从 CSS 像素转换为数据坐标（考虑倒置的 Y 轴）
+    // draw 中的 X = (ms - offsetMs) / vm * w + paddingX
+    // clickX = x_mouse - paddingX
+    // 代入：clickX = (ms - offsetMs) / vm * w
+    // 反过来：ms = (clickX / w) * vm + offsetMs
+    // draw 中的 Y = (1 - pos/100) * h - paddingY
+    // clickY = y_mouse - paddingY
+    // 代入：clickY = (1 - pos/100) * h - paddingY
+    // 反过来：pos = (1 - (clickY + paddingY) / h) * 100
     return {
-      ms: clamp(x / rect.width, 0, 1) * vm + offsetMs,
-      pos: (1 - clamp(y / rect.height, 0, 1)) * 100,
-      x, y
+      ms: clamp((clickX / w) * vm + offsetMs, offsetMs, vm + offsetMs),
+      pos: Math.max(0, Math.min(100, (1 - (clickY + paddingY) / h) * 100)),
+      x: clickX,
+      y: clickY
     };
   }
 
   /**
-   * 找离 (x,y) 最近的数据点
+   * 找离 (x,y) 最近的数据点（考虑 padding，与 draw 完全一致）
    * @returns {{idx:number, dist:number}}
    */
   function nearestPoint(actions, canvas, x, y, vm, offsetMs) {
     if (!actions || !actions.length) return { idx: -1, dist: Infinity };
     offsetMs = offsetMs || 0;
-    const rect = canvas.getBoundingClientRect();
+    
+    // 计算 padding（与 draw 完全一致）
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;  // CSS 像素宽度（与 draw 一致）
+    const h = canvas.clientHeight;  // CSS 像素高度（与 draw 一致）
+    const paddingX = w * 0.05;
+    const paddingY = h * 0.05;
+    
     let best = { idx: -1, dist: Infinity };
     actions.forEach((a, i) => {
-      const px = (a.at - offsetMs) / vm * rect.width;
-      const py = (1 - a.pos / 100) * rect.height;
-      const d = Math.hypot(px - x, py - y);
+      // 使用与 draw 完全相同的 X/Y 映射公式（包含 padding）
+      // x, y 是原始鼠标坐标（CSS 像素，包含 padding），需要转换为数据坐标空间
+      const px = (a.at - offsetMs) / vm * w + paddingX;
+      const py = (1 - a.pos / 100) * h - paddingY;
+      // 直接使用原始鼠标坐标与数据点映射坐标比较
+      const d = Math.hypot(x - px, y - py);
       if (d < best.dist) best = { idx: i, dist: d };
     });
     return best;
@@ -112,7 +149,7 @@
 
     // 修改 X/Y 映射函数，包含 padding
     const X = ms => (ms - offsetMs) / vm * w + paddingX;
-    const Y = pos => (1 - pos / 100) * h - paddingY;
+    const Y = pos => (1 - pos / 100) * (h - 2*paddingY) + paddingY;
 
     // 背景网格
     ctx.strokeStyle = '#e4e7ed';
@@ -148,19 +185,53 @@
 
       // 数据点
       actions.forEach((a, i) => {
-        const r = i === opts.dragIdx ? 6 : (i === opts.highlightIdx ? 7 : 4);
+        let r = 4; // 默认大小
+        
+        // 处理拖拽：优先使用 at+pos 匹配
+        let isDragging = false;
+        if (opts.dragIdx >= 0 && opts.dragAt !== undefined && opts.dragPos !== undefined) {
+          if (a.at === opts.dragAt && a.pos === opts.dragPos) isDragging = true;
+        } else if (i === opts.dragIdx) {
+          // 兼容 filtered 数组索引的方式
+          isDragging = true;
+        }
+        
+        // 处理高亮：使用 at+pos 匹配（与拖拽样式保持一致）
+        let isHighlighting = false;
+        if (opts.highlightIdx !== -1 && opts.highlightIdx < actions.length) {
+          // highlightIdx 是 visible 数组的索引，直接比较（不覆盖拖拽）
+          if (!isDragging && i === opts.highlightIdx) {
+            isHighlighting = true;
+          }
+        } else if (opts.highlightAt !== undefined) {
+          // 使用 at+pos 匹配（支持全数组索引，不覆盖拖拽）
+          if (!isDragging && a.at === opts.highlightAt && a.pos === opts.highlightPos) {
+            isHighlighting = true;
+          }
+        }
+        
+        // 设置半径和高亮样式：拖拽节点优先，高亮节点使用相同样式
+        if (isDragging || isHighlighting) r = 6;  // 拖拽和高亮都使用大小 6
+        
         ctx.beginPath();
         ctx.arc(X(a.at), Y(a.pos), r, 0, Math.PI * 2);
-        if (i === opts.dragIdx) ctx.fillStyle = '#e6a23c';
-        else if (i === opts.highlightIdx) ctx.fillStyle = '#f56c6c';
-        else ctx.fillStyle = '#409eff';
+        
+        // 设置填充颜色：拖拽节点优先，高亮节点使用相同橙色
+        let fillStyle = '#409eff';
+        if (isDragging || isHighlighting) {
+          fillStyle = '#e6a23c';  // 拖拽和高亮都使用橙色
+        }
+        
+        ctx.fillStyle = fillStyle;
         ctx.fill();
-        // 高亮节点加外环
-        if (i === opts.highlightIdx) {
+        
+        // 高亮节点加外环（使用 at+pos 匹配）
+        if (opts.highlightAt !== undefined && a.at === opts.highlightAt && a.pos === opts.highlightPos) {
+          const rOuter = 10;
           ctx.strokeStyle = '#f56c6c';
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(X(a.at), Y(a.pos), 10, 0, Math.PI * 2);
+          ctx.arc(X(a.at), Y(a.pos), rOuter, 0, Math.PI * 2);
           ctx.stroke();
         }
       });
