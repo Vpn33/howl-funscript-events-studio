@@ -206,6 +206,14 @@ async function evaluateTab(tabId, url, force) {
         } else {
           console.log('[HFES] 跳过 load_funscript（title 一致）', { tabId });
         }
+
+        // 获取设备电源状态并发送给内容脚本，用于创建悬浮组件
+        const status = st.body || {};
+
+        chrome.tabs.sendMessage(tabId, {
+          type: 'HFES_POWER_STATUS',
+          status
+        }).catch(() => {});
       }
     } catch (e) {
       console.warn('[HFES] status/load_funscript 异常:', e.message);
@@ -410,15 +418,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
-        case 'HFES_OPEN_EDITOR_TAB': {
-          const url = msg.url || '';
-          if (!url) { sendResponse({ ok: false, error: '缺少编辑器 URL' }); break; }
-          chrome.tabs.create({ url, active: true }, () => {
-            sendResponse({ ok: true });
-          }).catch(() => { sendResponse({ ok: false, error: '无法创建标签页' }); });
-          break;
-        }
-
         case 'HFES_ADD_EVENT': {
           const scripts = await getScripts();
           const target = scripts.find(s => s.id === msg.scriptId);
@@ -520,6 +519,63 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'HFES_OPEN_OPTIONS': {
           chrome.runtime.openOptionsPage();
           sendResponse({ ok: true });
+          break;
+        }
+
+        case 'HFES_OPEN_EDITOR_TAB': {
+          // 创建新的 sandbox.html tab，传递 scriptId 和 eventId
+          const scriptId = String(msg.scriptId || '');
+          const eventId = String(msg.eventId || '');
+          if (!scriptId || !eventId) { 
+            sendResponse({ ok: false, error: '缺少 scriptId 或 eventId' }); 
+            break; 
+          }
+          
+          // 先查找已打开的 options.html tab（扩展选项页）
+          const allTabs = await chrome.tabs.query({ active: false, currentWindow: true });
+          let optionsTabId = null;
+          for (const tab of allTabs) {
+            if (tab.url && tab.url.includes('options.html')) {
+              optionsTabId = tab.id;
+              break;
+            }
+          }
+          
+          if (optionsTabId) {
+            // 已存在 options.html，切换到该 tab 并重新加载（带新参数）
+            console.log('[HFES] 切换到已存在的 options tab:', optionsTabId);
+            
+            // 先激活这个 tab（切换为当前标签页）
+            await chrome.tabs.update(optionsTabId, { 
+              active: true 
+            });
+            
+            // 然后刷新页面（带新参数）
+            await chrome.tabs.update(optionsTabId, { 
+              url: chrome.runtime.getURL('options.html') + '?scriptId=' + encodeURIComponent(scriptId) + '&eventId=' + encodeURIComponent(eventId) 
+            });
+            
+            // 延迟一点时间让页面重新加载完成
+            setTimeout(() => {
+              chrome.tabs.sendMessage(optionsTabId, { 
+                __hfes_open_editor__: true, 
+                scriptId, 
+                eventId 
+              }).catch(() => {});
+            }, 500);
+            
+            sendResponse({ ok: true });
+          } else {
+            // 没有打开 options.html，创建新 tab
+            chrome.tabs.create({ 
+              url: chrome.runtime.getURL('options.html') + '?scriptId=' + encodeURIComponent(scriptId) + '&eventId=' + encodeURIComponent(eventId),
+              active: true 
+            }, () => {
+              sendResponse({ ok: true });
+            }).catch(() => { 
+              sendResponse({ ok: false, error: '无法创建标签页' }); 
+            });
+          }
           break;
         }
 

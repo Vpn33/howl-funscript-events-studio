@@ -208,7 +208,7 @@
   function applyMatched(msg) {
     // msg = { domainRule, matchedScript, monitors, triggers, settings }
     const newKey = (msg && msg.domainRule ? 'D:' + msg.domainRule.id : '') +
-                   (msg && msg.matchedScript ? 'S:' + msg.matchedScript.id : '');
+      (msg && msg.matchedScript ? 'S:' + msg.matchedScript.id : '');
     if (newKey !== currentMatchKey) {
       // 切换了域名规则组或脚本 → 清空所有状态
       lastValues.clear();
@@ -248,6 +248,364 @@
   let lastDomainRule = null;
   let lastMatchedScript = null;
 
+  // 电源控制悬浮组件相关
+  let powerHost = null;
+  let powerAValue = 0;
+  let powerBValue = 0;
+  let powerALimit = 70;
+  let powerBLimit = 70;
+  let playerPlaying = false;
+
+  async function howlApi(path, body) {
+    const settings = await getSettings();
+    if (!settings.host) throw new Error('未配置 Howl 设备地址');
+    const base = settings.host.replace(/\/+$/, '');
+    const resp = await fetch(base + path, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + (settings.apiKey || ''),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body === undefined ? {} : body)
+    });
+    const json = await resp.json().catch(() => ({}));
+    return { ok: resp.ok, status: resp.status, body: json };
+  }
+
+  function powerPanelCss() {
+    return `
+      .power-panel { background: #2a2a35; color: #dcdce4;
+                     box-shadow: 0 2px 12px rgba(0,0,0,.3); border-radius: 8px; overflow: hidden;
+                     font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+      .power-drag { height: 24px; display: flex; align-items: center; padding: 0 8px; cursor: grab;
+                    background: linear-gradient(135deg, #7c3aed, #9d4edd); color: #fff; font-size: 12px; font-weight: 600; }
+      .power-drag:active { cursor: grabbing; }
+      .power-body { padding: 8px; display: flex; align-items: center; gap: 12px; }
+      .power-channel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      .power-value { font-size: 14px; font-weight: 600; color: #7fd08f; background: #26262f;
+                     padding: 4px 8px; border-radius: 4px; min-width: 50px; text-align: center; }
+      .power-controls { display: flex; gap: 4px; }
+      .power-btn { width: 28px; height: 28px; border-radius: 6px; border: none; font-size: 14px;
+                    cursor: pointer; transition: all .1s; display: flex; align-items: center; justify-content: center; }
+      .power-btn:hover { transform: scale(1.05); }
+      .power-btn:active { transform: scale(.95); }
+      .power-btn.plus { background: #7c3aed; color: #fff; }
+      .power-btn.minus { background: #4b4b5e; color: #dcdce4; }
+      .power-switch { width: 44px; height: 24px; background: #4b4b5e; border-radius: 12px;
+                      cursor: pointer; transition: all .2s; display: flex; align-items: center; justify-content: center;}
+      .power-switch.on { background: #22a06b; }
+    `;
+  }
+
+  function createPowerPanel() {
+    if (powerHost && powerHost.parentElement) return;
+
+    powerHost = document.createElement('div');
+    powerHost.id = '__hfes_power_panel__';
+    powerHost.style = 'z-index: 999999;position: absolute;left: 85%;top: 15%;';
+
+    // 创建 shadow DOM 以隔离样式
+    const shadow = powerHost.attachShadow({ mode: 'open' });
+
+    // 加载样式
+    const style = document.createElement('style');
+    style.textContent = powerPanelCss();
+    shadow.appendChild(style);
+
+    const panel = el('div', 'panel');
+
+    // 创建面板内容
+    const switchEl = document.createElement('div');
+    switchEl.id = 'powerSwitch';
+    switchEl.className = 'power-switch';
+    switchEl.innerHTML = '<span>⏻</span>';
+
+    panel.innerHTML = `
+      <div class="power-panel">
+        <div class="power-body">
+          <div class="power-channel">
+            <div class="power-value" id="powerAValue">0/70</div>
+            <div class="power-controls"><span></span><span></span></div>
+          </div>
+          <div class="power-channel">
+            <div class="power-value" id="powerBValue">0/70</div>
+            <div class="power-controls"><span></span><span></span></div>
+          </div>
+          <div class="power-channel" style="gap:4px;">
+            <span></span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // 插入 switchEl
+    const switchContainer = panel.querySelector('.power-channel:last-child span');
+    if (switchContainer) {
+      switchContainer.parentNode.insertBefore(switchEl, switchContainer);
+      switchContainer.remove();
+    }
+
+    // 重新创建按钮元素并绑定事件（因为 innerHTML 会清除事件监听器）
+    const minusA = panel.querySelector('.power-channel:nth-child(1) .power-controls span:first-child');
+    const plusA = panel.querySelector('.power-channel:nth-child(1) .power-controls span:last-child');
+    if (minusA) {
+      minusA.className = 'power-btn minus';
+      minusA.textContent = '−';
+      // 长按功能：按下时开始快速增加，松开时停止
+      let decrementInterval = null;
+      const startDecrementA = () => {
+        if (decrementInterval) return;
+        decrementInterval = setInterval(async () => {
+          const result = await howlApi('/decrement_power', { channel: 0, step: 200 });
+          if (!result.ok || !result.body || !result.body.options) return;
+          powerAValue = result.body.options.power_a ?? 0;
+          powerBValue = result.body.options.power_b ?? 0;
+          updatePowerDisplay();
+        }, 100);
+      };
+      const stopDecrementA = () => {
+        if (decrementInterval) {
+          clearInterval(decrementInterval);
+          decrementInterval = null;   
+        }
+      };
+      
+      minusA.onmousedown = (e) => {
+        e.preventDefault();
+        startDecrementA();
+      };
+      minusA.onmouseup = stopDecrementA;
+      minusA.onmouseleave = stopDecrementA;
+      
+      // 正常点击（短按）功能
+      const originalClickHandler = minusA.onclick;
+      minusA.onclick = async (e) => {
+        if (decrementInterval) return; // 正在长按时不触发短按
+        if (originalClickHandler) originalClickHandler(e);
+        const result = await howlApi('/decrement_power', { channel: 0, step: 1 });
+        if (result.ok && result.body && result.body.options) {
+          powerAValue = result.body.options.power_a ?? 0;
+          powerBValue = result.body.options.power_b ?? 0;
+          updatePowerDisplay();
+        }
+      };
+    }
+    if (plusA) {
+      plusA.className = 'power-btn plus';
+      plusA.textContent = '+';
+      // 长按功能：按下时开始快速增加，松开时停止
+      let incrementInterval = null;
+      const startIncrementA = () => {
+        if (incrementInterval) return;
+        incrementInterval = setInterval(async () => {
+          const result = await howlApi('/increment_power', { channel: 0, step: 1 });
+          if (!result.ok || !result.body || !result.body.options) return;
+          powerAValue = result.body.options.power_a ?? 0;
+          powerBValue = result.body.options.power_b ?? 0;
+          updatePowerDisplay();
+        }, 100);
+      };
+      const stopIncrementA = () => {
+        if (incrementInterval) {
+          clearInterval(incrementInterval);
+          incrementInterval = null;
+        }
+      };
+      
+      plusA.onmousedown = (e) => {
+        e.preventDefault();
+        startIncrementA();
+      };
+      plusA.onmouseup = stopIncrementA;
+      plusA.onmouseleave = stopIncrementA;
+      
+      // 正常点击（短按）功能
+      const originalClickHandler = plusA.onclick;
+      plusA.onclick = async (e) => {
+        if (incrementInterval) return; // 正在长按时不触发短按
+        if (originalClickHandler) originalClickHandler(e);
+        const result = await howlApi('/increment_power', { channel: 0, step: 1 });
+        if (result.ok && result.body && result.body.options) {
+          powerAValue = result.body.options.power_a ?? 0;
+          powerBValue = result.body.options.power_b ?? 0;
+          updatePowerDisplay();
+        }
+      };
+    }
+
+    const minusB = panel.querySelector('.power-channel:nth-child(2) .power-controls span:first-child');
+    const plusB = panel.querySelector('.power-channel:nth-child(2) .power-controls span:last-child');
+    if (minusB) {
+      minusB.className = 'power-btn minus';
+      minusB.textContent = '−';
+      // 长按功能：按下时开始快速增加，松开时停止
+      let decrementInterval = null;
+      const startDecrementB = () => {
+        if (decrementInterval) return;
+        decrementInterval = setInterval(async () => {
+          const result = await howlApi('/decrement_power', { channel: 1, step: 200 });
+          if (!result.ok || !result.body || !result.body.options) return;
+          powerBValue = result.body.options.power_b ?? 0;
+          updatePowerDisplay();
+        }, 100);
+      };
+      const stopDecrementB = () => {  
+        if (decrementInterval) {
+          clearInterval(decrementInterval);
+          decrementInterval = null;   
+        }
+      };
+      
+      minusB.onmousedown = (e) => {
+        e.preventDefault();
+        startDecrementB();
+      };
+      minusB.onmouseup = stopDecrementB;
+      minusB.onmouseleave = stopDecrementB;
+      
+      // 正常点击（短按）功能
+      const originalClickHandler = minusB.onclick;
+      minusB.onclick = async (e) => {
+        if (decrementInterval) return; // 正在长按时不触发短按
+        if (originalClickHandler) originalClickHandler(e);
+        const result = await howlApi('/decrement_power', { channel: 1, step: 1 });
+        if (result.ok && result.body && result.body.options) {
+          powerBValue = result.body.options.power_b ?? 0;   
+          updatePowerDisplay();
+        }
+      };
+    }
+    if (plusB) {
+      plusB.className = 'power-btn plus';
+      plusB.textContent = '+';
+      // 长按功能：按下时开始快速增加，松开时停止
+      let incrementInterval = null;
+      const startIncrementB = () => {
+        if (incrementInterval) return;
+        incrementInterval = setInterval(async () => {
+          const result = await howlApi('/increment_power', { channel: 1, step: 1 });
+          if (!result.ok || !result.body || !result.body.options) return;
+          powerBValue = result.body.options.power_b ?? 0;
+          updatePowerDisplay();
+        }, 100);
+      };
+      const stopIncrementB = () => {
+        if (incrementInterval) {
+          clearInterval(incrementInterval);
+          incrementInterval = null;
+        }
+      };
+      
+      plusB.onmousedown = (e) => {
+        e.preventDefault();
+        startIncrementB();
+      };
+      plusB.onmouseup = stopIncrementB;
+      plusB.onmouseleave = stopIncrementB;
+      
+      // 正常点击（短按）功能
+      const originalClickHandler = plusB.onclick;
+      plusB.onclick = async (e) => {
+        if (incrementInterval) return; // 正在长按时不触发短按
+        if (originalClickHandler) originalClickHandler(e);
+        const result = await howlApi('/increment_power', { channel: 1, step: 1 });
+        if (result.ok && result.body && result.body.options) {
+          powerBValue = result.body.options.power_b ?? 0;
+          updatePowerDisplay();
+        }
+      };
+    }
+
+    shadow.appendChild(panel);
+    document.body.appendChild(powerHost);
+
+    // 拖动功能
+    setupDraggable(powerHost);
+
+    // 通过 shadow DOM 查找元素
+    const shadowEl = powerHost.shadowRoot;
+    const actualSwitchEl = shadowEl.querySelector('#powerSwitch');
+
+    if (actualSwitchEl) {
+      // 根据 playerPlaying 状态初始化开关
+      if (playerPlaying) {
+        actualSwitchEl.classList.add('on');
+      }
+
+      actualSwitchEl.onclick = async () => {
+        const isOn = actualSwitchEl.classList.toggle('on');
+        if (isOn) {
+          const result = await howlApi('/start_player', {});
+          if (result.ok && result.body && result.body.player) {
+            playerPlaying = result.body.player.playing;
+            updatePowerDisplay();
+          }
+        } else {
+          const result = await howlApi('/stop_player', {});
+          if (result.ok && result.body && result.body.player) {
+            playerPlaying = result.body.player.playing;
+            updatePowerDisplay();
+          }
+        }
+      };
+    }
+
+    updatePowerDisplay();
+  }
+
+  function setupDraggable(el) {
+    let isDragging = false;
+    let startX, startY, initialLeft, initialTop;
+
+    el.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'BUTTON' || e.target.classList.contains('power-switch')) return;
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const rect = el.getBoundingClientRect();
+      initialLeft = rect.left;
+      initialTop = rect.top;
+      el.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      el.style.left = `${initialLeft + dx}px`;
+      el.style.top = `${initialTop + dy}px`;
+      el.style.transform = 'none';
+    });
+
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+      el.style.cursor = '';
+    });
+  }
+
+  function updatePowerDisplay() {
+    if (!powerHost) return;
+    const shadowEl = powerHost.shadowRoot;
+    const valAEl = shadowEl.querySelector('#powerAValue');
+    const valBEl = shadowEl.querySelector('#powerBValue');
+    if (valAEl) valAEl.textContent = `${powerAValue}/${powerALimit}`;
+    if (valBEl) valBEl.textContent = `${powerBValue}/${powerBLimit}`;
+    // 更新开关状态
+    const switchEl = powerHost.shadowRoot.querySelector('#powerSwitch');
+    if (switchEl) {
+      if (playerPlaying) {
+        switchEl.classList.add('on');
+      } else {
+        switchEl.classList.remove('on');
+      }
+    }
+  }
+
+  async function getSettings() {
+    const data = await chrome.storage.local.get('settings');
+    return Object.assign({}, { host: 'http://127.0.0.1:9080', apiKey: '' }, data.settings || {});
+  }
+
   // ---------------- URL 变化监听（SPA 翻页 / hash 路由） ----------------
   // 内容脚本隔离环境 patch history 无法拦截页面调用，采用轻量轮询（300ms 字符串比对）
   let lastKnownUrl = location.href;
@@ -259,7 +617,7 @@
     clearTimeout(urlNotifyTimer);
     urlNotifyTimer = setTimeout(() => {
       evaluateMonitors();
-      chrome.runtime.sendMessage({ type: 'HFES_REAPPLY', url: location.href }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'HFES_REAPPLY', url: location.href }).catch(() => { });
     }, 250);
   }, 300);
 
@@ -609,9 +967,20 @@
     const editEvBtn = el('button', 'edit-ev-btn', '编辑事件');
     editEvBtn.title = '在面板中直接编辑此事件的动作';
     editEvBtn.style.marginLeft = '6px';
-    editEvBtn.onclick = () => {
+    editEvBtn.onclick = async () => {
       if (!panelScriptId || !t.eventId) { alert('请先选择脚本和事件'); return; }
-      openEventEditor(panelScriptId, t.eventId, host.shadowRoot);
+
+      try {
+        // 通过 background 发送消息打开编辑器 tab（使用 broker.js 的 handler）
+        chrome.runtime.sendMessage({
+          type: 'HFES_OPEN_EDITOR_TAB',
+          scriptId: panelScriptId,
+          eventId: t.eventId
+        });
+
+      } catch (e) {
+        console.error('打开编辑器出错：' + e.message);
+      }
     };
     r5.appendChild(editEvBtn);
     // 新增事件按钮：为当前脚本创建空事件并选中
@@ -683,51 +1052,6 @@
     renderTriggers();
   }
 
-  // ---- 事件编辑器弹窗（iframe 加载 inline-editor.html）----
-  function openEventEditor(scriptId, eventId, sr) {
-    const bg = el('div', 'ev-editor-bg');
-    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:2147483646;' +
-                       'display:flex;align-items:center;justify-content:center;';
-    const box = el('div', null, '');
-    box.style.cssText = 'width:min(1000px,96vw);height:min(720px,90vh);' +
-                        'background:white;border-radius:10px;overflow:hidden;' +
-                        'box-shadow:0 12px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;';
-    const iframe = document.createElement('iframe');
-    iframe.src = chrome.runtime.getURL('inline-editor.html') + `#scriptId=${encodeURIComponent(scriptId)}&eventId=${encodeURIComponent(eventId)}`;
-    iframe.style.cssText = 'width:100%;height:100%;border:none;';
-    iframe.title = '编辑事件 ' + eventId;
-    box.appendChild(iframe);
-    bg.appendChild(box);
-
-    // 监听 iframe 的 postMessage（关闭/保存通知）
-    const onMsg = (e) => {
-      const d = e.data;
-      if (!d || d.__hfes_inline_editor__ !== true) return;
-      if (d.action === 'close' || d.action === 'saved') {
-        bg.remove();
-        window.removeEventListener('message', onMsg);
-        if (d.action === 'saved') {
-          // 刷新面板里的 trigger 下拉（以防新增了事件）
-          renderTriggers();
-        }
-      }
-    };
-    window.addEventListener('message', onMsg);
-
-    // 点背景关闭
-    bg.addEventListener('click', (e) => {
-      if (e.target === bg) { bg.remove(); window.removeEventListener('message', onMsg); }
-    });
-
-    // ESC 关闭
-    const onKey = (e) => {
-      if (e.key === 'Escape') { bg.remove(); window.removeEventListener('message', onMsg); window.removeEventListener('keydown', onKey); }
-    };
-    window.addEventListener('keydown', onKey);
-
-    sr.appendChild(bg);
-  }
-
   function renderTriggers() {
     if (!host) return;
     const list = host.shadowRoot.getElementById('trigList');
@@ -752,13 +1076,13 @@
     if (panelDomainMatched) {
       domainStatus.innerHTML = `<span style="color:#7fd08f;">✓ 已匹配: <b>${escapeHtml(panelDomainGroupName)}</b></span>`;
       domainLink.innerHTML = `<button type="button" style="${linkBtnStyle()}">设置页编辑</button>`;
-      domainLink.onclick = () => { chrome.runtime.sendMessage({ type: 'HFES_OPEN_OPTIONS' }).catch(() => {}); };
+      domainLink.onclick = () => { chrome.runtime.sendMessage({ type: 'HFES_OPEN_OPTIONS' }).catch(() => { }); };
       if (monSecTitle) monSecTitle.innerHTML = '① 监控器 <span style="font-size:10px;color:#909399;font-weight:normal;">(来自规则组 · 只读)</span>';
       if (monSecHint) monSecHint.innerHTML = '监控器定义<strong>观察什么</strong>（CSS 选择器 / URL），已由域名规则组配置，请到设置页修改。条件判断和触发在下方触发器里配置。';
     } else {
       domainStatus.innerHTML = `<span style="color:#ffb973;">⚠ "${escapeHtml(hostname)}" 未匹配域名规则组</span>`;
       domainLink.innerHTML = `<button type="button" style="${linkBtnStyle()}">设置页创建</button>`;
-      domainLink.onclick = () => { chrome.runtime.sendMessage({ type: 'HFES_OPEN_OPTIONS' }).catch(() => {}); };
+      domainLink.onclick = () => { chrome.runtime.sendMessage({ type: 'HFES_OPEN_OPTIONS' }).catch(() => { }); };
       if (monSecTitle) monSecTitle.innerHTML = '① 监控器（只定义观察目标）';
       if (monSecHint) monSecHint.innerHTML = '当前域名未匹配规则组，可临时添加监控器，或去设置页创建域名规则组（推荐）。';
     }
@@ -908,7 +1232,7 @@
         // 用上一个触发器做模板（清空 value，eventId 自动设为第一个未占用的）
         const last = panelTriggers[panelTriggers.length - 1];
         const base = last ? { enabled: last.enabled !== false, monitorId: last.monitorId || '', match: last.match || 'equals' }
-                          : { enabled: true, monitorId: panelMonitors.length ? panelMonitors[0].id : '', match: 'equals' };
+          : { enabled: true, monitorId: panelMonitors.length ? panelMonitors[0].id : '', match: 'equals' };
         // 找第一个未被当前 triggers 占用的 eventId
         const script = panelState.scripts.find(s => s.id === panelScriptId);
         const scriptIds = script ? script.eventIds.filter(Boolean) : [];
@@ -990,9 +1314,26 @@
         else openPanel().catch(e => console.warn('[HFES] 打开面板失败:', e && e.message));
         sendResponse({ ok: true });
         break;
+      case 'HFES_POWER_STATUS':
+        // 电源状态更新
+        powerAValue = msg.status.options.power_a ?? 0;
+        powerBValue = msg.status.options.power_b ?? 0;
+        powerALimit = msg.status.options.power_a_limit ?? 200;
+        powerBLimit = msg.status.options.power_b_limit ?? 200;
+        playerPlaying = msg.status.player?.playing ?? false;
+
+        // 确保悬浮组件存在
+        if (!powerHost || !powerHost.parentElement) {
+          createPowerPanel();
+        } else {
+          updatePowerDisplay();
+
+        }
+        sendResponse({ ok: true });
+        break;
     }
   });
 
   // 就绪通知 background 评估当前 URL（含扩展安装后首次注入）
-  chrome.runtime.sendMessage({ type: 'HFES_CONTENT_READY', url: location.href }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'HFES_CONTENT_READY', url: location.href }).catch(() => { });
 })();
