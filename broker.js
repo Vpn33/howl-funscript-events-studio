@@ -17,6 +17,51 @@ const HANDLERS = {
     await chrome.storage.local.set(patch);
     return true;
   },
+  async openEditorTab(scriptId, eventId) {
+    // 查找已打开的包含 sandbox.html 的 tab
+    const allTabs = await chrome.tabs.query({ active: false, currentWindow: true });
+    
+    for (const tab of allTabs) {
+      if (tab.url && tab.url.includes('sandbox.html')) {
+        // 找到对应的 tab，发送消息切换到编辑器 tab
+        await chrome.tabs.sendMessage(tab.id, { __hfes_open_editor__: true, scriptId, eventId });
+        return { ok: true, tabId: tab.id };
+      }
+    }
+    
+    // 如果没有打开 sandbox.html，尝试查找 options.html
+    for (const tab of allTabs) {
+      if (tab.url && tab.url.includes('options.html')) {
+        // 在 options 页中打开新 tab（使用 sandbox.html）
+        const newTab = await chrome.tabs.create({ 
+          url: chrome.runtime.getURL('sandbox.html'),
+          active: true
+        });
+        // 等待 tab 加载完成后发送消息
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await chrome.tabs.sendMessage(newTab.id, { __hfes_open_editor__: true, scriptId, eventId });
+        return { ok: true, tabId: newTab.id };
+      }
+    }
+    
+    // 如果还没有任何页面打开，创建新 tab
+    const newTab = await chrome.tabs.create({ 
+      url: chrome.runtime.getURL('options.html') + `?scriptId=${scriptId}&eventId=${eventId}`,
+      active: true
+    });
+    
+    // 等待 options 加载完成，然后在该 tab 中打开 sandbox.html
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 在同一个 tab 中打开 sandbox.html（带参数）
+    const sandboxTab = await chrome.tabs.create({ 
+      url: chrome.runtime.getURL('sandbox.html') + `?scriptId=${scriptId}&eventId=${eventId}`,
+      active: true,
+      index: newTab.id
+    });
+    
+    return { ok: true, tabId: sandboxTab.id };
+  },
   async bg(msg) {
     return new Promise((resolve) => {
       try {

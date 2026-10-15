@@ -609,9 +609,20 @@
     const editEvBtn = el('button', 'edit-ev-btn', '编辑事件');
     editEvBtn.title = '在面板中直接编辑此事件的动作';
     editEvBtn.style.marginLeft = '6px';
-    editEvBtn.onclick = () => {
+    editEvBtn.onclick = async () => {
       if (!panelScriptId || !t.eventId) { alert('请先选择脚本和事件'); return; }
-      openEventEditor(panelScriptId, t.eventId, host.shadowRoot);
+      
+      try {
+        // 通过 background 发送消息打开编辑器 tab（使用 broker.js 的 handler）
+        chrome.runtime.sendMessage({ 
+          type: 'HFES_OPEN_EDITOR_TAB',
+          scriptId: panelScriptId, 
+          eventId: t.eventId 
+        });
+        
+      } catch (e) {
+        console.error('打开编辑器出错：' + e.message);
+      }
     };
     r5.appendChild(editEvBtn);
     // 新增事件按钮：为当前脚本创建空事件并选中
@@ -681,51 +692,6 @@
     const addBtn = host.shadowRoot.getElementById('addMon');
     if (addBtn) addBtn.style.display = readonly ? 'none' : '';
     renderTriggers();
-  }
-
-  // ---- 事件编辑器弹窗（iframe 加载 inline-editor.html）----
-  function openEventEditor(scriptId, eventId, sr) {
-    const bg = el('div', 'ev-editor-bg');
-    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:2147483646;' +
-                       'display:flex;align-items:center;justify-content:center;';
-    const box = el('div', null, '');
-    box.style.cssText = 'width:min(1000px,96vw);height:min(720px,90vh);' +
-                        'background:white;border-radius:10px;overflow:hidden;' +
-                        'box-shadow:0 12px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;';
-    const iframe = document.createElement('iframe');
-    iframe.src = chrome.runtime.getURL('inline-editor.html') + `#scriptId=${encodeURIComponent(scriptId)}&eventId=${encodeURIComponent(eventId)}`;
-    iframe.style.cssText = 'width:100%;height:100%;border:none;';
-    iframe.title = '编辑事件 ' + eventId;
-    box.appendChild(iframe);
-    bg.appendChild(box);
-
-    // 监听 iframe 的 postMessage（关闭/保存通知）
-    const onMsg = (e) => {
-      const d = e.data;
-      if (!d || d.__hfes_inline_editor__ !== true) return;
-      if (d.action === 'close' || d.action === 'saved') {
-        bg.remove();
-        window.removeEventListener('message', onMsg);
-        if (d.action === 'saved') {
-          // 刷新面板里的 trigger 下拉（以防新增了事件）
-          renderTriggers();
-        }
-      }
-    };
-    window.addEventListener('message', onMsg);
-
-    // 点背景关闭
-    bg.addEventListener('click', (e) => {
-      if (e.target === bg) { bg.remove(); window.removeEventListener('message', onMsg); }
-    });
-
-    // ESC 关闭
-    const onKey = (e) => {
-      if (e.key === 'Escape') { bg.remove(); window.removeEventListener('message', onMsg); window.removeEventListener('keydown', onKey); }
-    };
-    window.addEventListener('keydown', onKey);
-
-    sr.appendChild(bg);
   }
 
   function renderTriggers() {

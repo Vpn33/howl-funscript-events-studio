@@ -6,6 +6,9 @@ const { createApp, ref, reactive, computed, watch, onMounted, nextTick } = Vue;
 const ElMessage = ElementPlus.ElMessage;
 const ElMessageBox = ElementPlus.ElMessageBox;
 const Core = window.WaveEditorCore; // wave-editor-core.js（共享波形编辑器核心）
+const scripts = ref([]);
+const mainTab = ref('list');
+const activeName = ref('0');
 
 function clamp(v, min, max) { return Core ? Core.clamp(v, min, max) : Math.min(max, Math.max(min, v)); }
 function uuid() { return crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2); }
@@ -19,14 +22,99 @@ function fmtDuration(ms) {
 // ---------------- 沙箱桥接 ----------------
 let __reqId = 0;
 const __pending = new Map();
+
+// 等待 scripts 加载完成（用于编辑事件时）
+async function waitForScripts() {
+  return new Promise((resolve, reject) => {
+    if (scripts.value.length > 0) {
+      resolve();
+      return;
+    }
+    // 超时保护（最多等 2 秒）
+    const timeout = setTimeout(() => {
+      reject(new Error('scripts 加载超时'));
+    }, 2000);
+    
+    // 监听 scripts 变化
+    const check = () => {
+      if (scripts.value.length > 0) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    };
+    
+    const timer = setInterval(check, 50);
+    window.addEventListener('message', (e) => {
+      if (e.data && e.data.func === 'check_scripts_ready') {
+        check();
+      }
+    });
+  });
+}
+
 window.addEventListener('message', (e) => {
-  const msg = e.data;
-  if (!msg || msg.__hfes_bridge__ !== true || msg.kind !== 'response') return;
-  const p = __pending.get(msg.id);
-  if (!p) return;
-  __pending.delete(msg.id);
-  if (msg.ok) p.resolve(msg.result);
-  else p.reject(new Error(msg.error || 'bridge error'));
+  if (e.data?.func) {
+    if (e.data.func === 'edit_event') {
+      const scriptId = e.data.scriptId;
+      const eventId = e.data.eventId;
+
+      // 等待 scripts 加载完成，然后设置全局标志（触发 Vue watch）
+      waitForScripts()
+          .then(async () => {
+            try {
+              // 找到对应的脚本并触发编辑按钮操作
+              const funscriptIdx = scripts.value.findIndex(x => x.id === scriptId);
+              if (funscriptIdx >=0 ) {
+                console.log('[options] edit_event:', scriptId, eventId, '→', scripts.value[funscriptIdx].funscript.events.length, 'events');
+                  // 找到对应的事件索引
+                  let eventIndex =  scripts.value[funscriptIdx].funscript.events.findIndex(ev => ev.id === eventId);
+
+                  // 找到表格中的编辑按钮并点击
+                  setTimeout(() => {
+                    const tr = document.querySelector(`#pane-list .el-table__body tr:nth-child(${funscriptIdx + 1})`);
+                    if (tr) {
+                      const editBtn = tr.querySelector('td:last-child button.el-button--primary');
+                      if (editBtn) {
+                        editBtn.click();
+                        setTimeout(() => {
+                          if(eventIndex >= 0) {
+                            const tab = document.querySelector(`div #tab-${eventIndex}`);
+                            tab.click();
+                          }
+                        }, 300);
+
+                      }
+                    } else {
+                      console.warn('[options] 未找到表格行:', funscriptIdx);
+                    }
+                  }, 300);
+
+                  ElMessage.success('已打开事件 ' + eventId + ' 的编辑器');
+                
+              } else {
+              console.error('[options] 脚本不存在或未包含 funscript:', scriptId, s);
+              ElMessage.error('未找到该脚本或脚本数据不完整');
+            }
+          } catch (err) {
+            console.error('[options] edit_event 处理失败:', err);
+            ElMessage.error('打开编辑器失败：' + err.message);
+          }
+        })
+        .catch(err => {
+          console.error('[options] scripts 加载超时:', err);
+          ElMessage.error('打开编辑器超时，请刷新页面后重试');
+        });
+    }
+    console.log('event = ', e.data);
+  } else {
+    const msg = e.data;
+    if (!msg || msg.__hfes_bridge__ !== true || msg.kind !== 'response') return;
+    const p = __pending.get(msg.id);
+    if (!p) return;
+    __pending.delete(msg.id);
+    if (msg.ok) p.resolve(msg.result);
+    else p.reject(new Error(msg.error || 'bridge error'));
+  }
 });
 function bridgeCall(type, payload) {
   return new Promise((resolve, reject) => {
@@ -52,6 +140,7 @@ async function setStore(patch) {
   return bridgeCall('setStore', patch);
 }
 
+// ================= Vue App ==================
 
 const SAMPLE = {
   metadata: {
@@ -307,8 +396,6 @@ createApp({
     }
 
     // ================= 脚本库 =================
-    const scripts = ref([]);
-    const mainTab = ref('list');
 
     async function refreshScripts() {
       const store = await loadStore();
@@ -367,7 +454,9 @@ createApp({
       nextTick(() => setTimeout(draw, 80));
     }
 
+    // 编辑事件时使用的独立版本（不依赖 setup 中的响应式变量）
     function editScript(row) {
+      if (!row || !row.id) return;
       editingId.value = row.id;
       editingName.value = scriptTitle(row);
       applyImport(JSON.parse(JSON.stringify(row.funscript)));
@@ -509,7 +598,7 @@ createApp({
     const version = ref('');
 
     const events = reactive([]);
-    const activeName = ref('0');
+
     const activeIndex = computed(() => clamp(parseInt(activeName.value) || 0, 0, Math.max(0, events.length - 1)));
     const activeEvent = computed(() => events[activeIndex.value] || null);
     const totalActions = computed(() => events.reduce((s, e) => s + e.actions.length, 0));
@@ -564,7 +653,7 @@ createApp({
       const ev = activeEvent.value;
       if (!ev) return [];
       const maxAt = eventMaxAt(ev);
-      
+
       // 计算当前视图的 offsetMs，确保与 Core.draw 一致
       let offsetMs;
       if (scrollOffsetMs.value === 0 && !isScrollDragging) {
@@ -574,24 +663,24 @@ createApp({
         // 用户操作后，使用 scrollOffsetMs
         offsetMs = Math.max(getFirstActionAt(ev), Math.min(scrollOffsetMs.value, maxAt - displayRangeMs.value));
       }
-      
+
       const startMs = offsetMs;
       const endMs = Math.min(maxAt, offsetMs + displayRangeMs.value);
-      
+
       console.log(`[filteredActions] 裁剪范围：${startMs}ms ~ ${endMs}ms (offsetMs: ${offsetMs})`);
-      
+
       // 添加调试日志，显示第一个和最后一个节点的 at 值
       if (ev.actions.length > 0) {
         const firstAt = getFirstActionAt(ev);
         console.log(`[filteredActions] all actions: firstAt=${firstAt}, maxAt=${maxAt}`);
       }
-      
+
       const beforeLen = ev.actions.length;
       const filtered = ev.actions.filter(a => a.at >= startMs && a.at <= endMs);
       const afterLen = filtered.length;
-      
+
       console.log(`[filteredActions] 从 ${beforeLen} 个节点过滤到 ${afterLen} 个节点`);
-      
+
       return filtered;
     });
 
@@ -665,7 +754,7 @@ createApp({
     // 表格行高亮样式方法（使用 at+pos 匹配，不依赖索引）
     const highlightedRowClass = (row, rowIndex) => {
       // console.log(`[highlightedRowClass] row=${JSON.stringify(row)}, rowIndex=${rowIndex}, typeof row=${typeof row}`);
-      
+
       if (!activeEvent || !activeEvent.value) {
         // console.warn('[highlightedRowClass] activeEvent is null/undefined');
         return '';
@@ -675,23 +764,23 @@ createApp({
         // console.warn('[highlightedRowClass] ev.actions is not an array');
         return '';
       }
-      
+
       // 通过 at+pos 查找高亮节点（不依赖索引）
       let highlightedNode = null;
       if (typeof highlightIdx.value === 'number' && highlightIdx.value >= 0 && highlightIdx.value < ev.actions.length) {
         highlightedNode = ev.actions[highlightIdx.value];
       }
-      
+
       // 如果没有设置索引，尝试通过鼠标点击位置反向查找（可选）
       if (!highlightedNode) {
         // console.warn('[highlightedRowClass] Cannot determine highlighted node');
         return '';
       }
-      
+
       // 确保 row 对象有 at 和 pos，尝试多种方式获取
       let rowAt = row.at;
       let rowPos = row.pos;
-      
+
       if (rowAt === undefined) {
         // Element Plus 表格有时会嵌套传递数据：{row: {at, pos}, rowIndex}
         if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
@@ -703,7 +792,7 @@ createApp({
           rowAt = row['at'] || row.time || row.ms || undefined;
         }
       }
-      
+
       if (rowPos === undefined) {
         if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
           rowPos = row.row.pos;
@@ -713,45 +802,45 @@ createApp({
           rowPos = row['pos'] || row.position || row.y || undefined;
         }
       }
-      
+
       // console.log(`[highlightedRowClass] Comparing row(at=${rowAt}, pos=${rowPos}) with highlighted(at=${highlightedNode.at}, pos=${highlightedNode.pos})`);
-      
+
       // 比较 at 和 pos 是否匹配（允许微小误差）
       const atDiff = Math.abs((rowAt || 0) - (highlightedNode.at || 0));
       const posDiff = Math.abs((rowPos || 0) - (highlightedNode.pos || 0));
       // console.log(`[highlightedRowClass] at diff=${atDiff}, pos diff=${posDiff}`);
-      
+
       return (atDiff < 1 && posDiff < 1) ? 'table-row-highlight' : '';
     };
 
     // 滚动到指定的表格行（如果不在可视区域内）
     const scrollToHighlightedRow = (node) => {
       if (!node) return;
-      
+
       console.log('[scrollToHighlightedRow] node:', node.at, node.pos);
-      
+
       // 在 filteredActions 中查找匹配的节点
-      const targetIndex = filteredActions.value.findIndex(a => 
+      const targetIndex = filteredActions.value.findIndex(a =>
         Math.abs((a.at || 0) - (node.at || 0)) < 1 &&
         Math.abs((a.pos || 0) - (node.pos || 0)) < 1
       );
-      
+
       console.log('[scrollToHighlightedRow] targetIndex:', targetIndex);
-      
+
       if (targetIndex >= 0) {
         // 使用 nextTick 等待 DOM 更新后再滚动
         nextTick(() => {
           const table = document.querySelector('#actionsTable');
-          
+
           if (table) {
             const tbody = table.querySelector('tbody');
-            
+
             if (tbody) {
               const rows = Array.from(tbody.querySelectorAll('tr'));
-              
+
               if (rows[targetIndex]) {
                 const targetRow = rows[targetIndex];
-                
+
                 // 使用 scrollIntoView 让行进入可视区域
                 targetRow.scrollIntoView({ block: 'nearest', behavior: 'auto' });
               } else {
@@ -1004,16 +1093,16 @@ createApp({
     }
     function nearestPoint(canvas, mouseX, mouseY) {
       const ev = activeEvent.value; if (!ev || !ev.actions.length) return { idx: -1, dist: Infinity };
-      
+
       // 使用实际显示的 offsetMs（与 Core.draw 一致）
       const actualOffset = scrollOffsetMs.value === 0 && !isScrollDragging ? getFirstActionAt(ev) : Math.max(getFirstActionAt(ev), Math.min(scrollOffsetMs.value, eventMaxAt(ev) - displayRangeMs.value));
-      
+
       if (Core) {
         // 使用 Core.nearestPoint（已包含 padding 逻辑）
         // mouseX, mouseY 是原始鼠标坐标（包含 padding）
         return Core.nearestPoint(ev.actions, canvas, mouseX, mouseY, displayRangeMs.value, actualOffset);
       }
-      
+
       // fallback: fallback 到本地实现（与 draw 一致）
       const rect = canvas.getBoundingClientRect();
       const width = rect.width;
@@ -1021,8 +1110,8 @@ createApp({
       ev.actions.forEach((a, i) => {
         // 使用与 Core.draw 相同的 X/Y 映射公式（考虑 padding）
         // mouseX, mouseY 是原始鼠标坐标，需要转换为数据坐标空间进行比较
-        const px = ((a.at - actualOffset) / displayRangeMs.value * width + (width * 0.05)), 
-              py = (1 - a.pos / 100) * rect.height - (rect.height * 0.05);
+        const px = ((a.at - actualOffset) / displayRangeMs.value * width + (width * 0.05)),
+          py = (1 - a.pos / 100) * rect.height - (rect.height * 0.05);
         // 直接使用原始鼠标坐标与数据点映射坐标比较
         const d = Math.hypot(mouseX - px, mouseY - py);
         if (d < best.dist) best = { idx: i, dist: d };
@@ -1035,29 +1124,29 @@ createApp({
       const canvas = getCanvas();
       const rect = canvas.getBoundingClientRect();
       console.log(`[onPointerDown] mouse X=${e.clientX}, Y=${e.clientY}`);
-      
+
       // 计算 padding（与 Core.draw 完全一致，使用 CSS 像素）
       const paddingX = rect.width * 0.05;
       const paddingY = rect.height * 0.05;
-      
+
       // 将鼠标坐标转换为 canvas 坐标系（减去 padding）
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
       const clickX = mouseX > paddingX ? mouseX - paddingX : 0;
       const clickY = mouseY > paddingY ? mouseY - paddingY : 0;
-      
+
       console.log(`[onPointerDown] canvas X=${clickX}, Y=${clickY}, paddingX=${paddingX}, paddingY=${paddingY}`);
-      
+
       const { ms, pos } = toData({ clientX: e.clientX, clientY: e.clientY });
       console.log(`[onPointerDown] converted to data: ms=${ms}, pos=${pos}`);
-      
+
       if (e.button === 2) {
         selStartX = selCurX = x; selStartY = selCurY = y;
         isRightClick = true;
         isRightSelecting = false;
         return;
       }
-      
+
       // 计算节点位置时也要考虑 padding（与 Core.draw 一致）
       // 使用原始鼠标坐标（包含 padding），与 nearestPoint 的坐标系统一致
       const { idx, dist } = nearestPoint(canvas, mouseX, mouseY);
@@ -1066,12 +1155,12 @@ createApp({
         const node = ev.actions[idx];
         console.log(`[onPointerDown] selected node: at=${node.at}, pos=${node.pos}`);
       }
-      if (idx >= 0 && dist <= 80) { 
+      if (idx >= 0 && dist <= 80) {
         dragIdx = idx;  // 点击节点后取消拖拽状态（不是拖动）
         // canvas 点击节点时，同时设置 highlightIdx（与表格行点击逻辑一致）
         const node = ev.actions[idx];
         // 使用 at+pos 匹配找到 filteredActions 中的索引
-        const highlightedNode = filteredActions.value.find(fa => 
+        const highlightedNode = filteredActions.value.find(fa =>
           Math.abs((fa.at || 0) - (node.at || 0)) < 1 &&
           Math.abs((fa.pos || 0) - (node.pos || 0)) < 1
         );
@@ -1081,12 +1170,12 @@ createApp({
           // 如果没有找到，使用全数组索引（兼容情况）
           highlightIdx.value = idx;
         }
-        
+
         console.log(`[onPointerDown] highlightIdx set to: ${highlightIdx.value}`);
-        
+
         // 滚动到可视区域（如果高亮行不在视图内）
         scrollToHighlightedRow(node);
-        
+
         draw();  // 重绘 canvas 显示高亮样式
       } else {
         const p = { at: Math.round(ms), pos: Math.round(clamp(pos, 0, 100)) };
@@ -1147,7 +1236,7 @@ createApp({
       if (Core) {
         // 计算当前视图的 offsetMs，确保与 filteredActions 一致
         const maxAt = eventMaxAt(ev);
-        
+
         let actualOffsetMs;
         if (scrollOffsetMs.value === 0 && !isScrollDragging) {
           // 初始加载时，使用第一个数据点作为偏移量
@@ -1157,14 +1246,14 @@ createApp({
           // 用户操作后（滚动或拖拽），使用 scrollOffsetMs 作为偏移量
           // 但需要确保 visible 数组与 offsetMs 和 displayRangeMs 匹配
           console.log(`[draw] 滚动视图：scrollOffsetMs=${scrollOffsetMs.value}, maxAt=${maxAt}, displayRangeMs=${displayRangeMs.value}`);
-          
+
           // 计算实际偏移量（与 filteredActions 的 startMs 一致）
           const firstAt = getFirstActionAt(ev);
           actualOffsetMs = Math.max(firstAt, Math.min(scrollOffsetMs.value, maxAt - displayRangeMs.value));
         }
-        
+
         console.log(`[draw] actualOffsetMs=${actualOffsetMs}, displayRangeMs=${displayRangeMs.value}`);
-        
+
         // 只绘制当前视图范围内的节点，与表格保持一致
         const visible = filteredActions.value;
         // 将 dragIdx（全数组索引）转换为 filteredActions 中的索引，如果没有找到则保持原值
@@ -1177,24 +1266,24 @@ createApp({
           // 如果 dragIdx 不在 filtered 数组中，保持全数组索引传递给 Core.draw
           console.log(`[draw] dragIdx=${dragIdx} not in visible, keeping full index`);
         }
-        
+
         // highlight：将全数组索引转换为 filteredActions 的索引（当前视图可见的节点）
         let visHighlightIdx = -1;
         if (highlightIdx.value >= 0 && highlightIdx.value < ev.actions.length) {
           const highlightedNode = ev.actions[highlightIdx.value];
           console.log(`[draw] highlightIdx=${highlightIdx.value}, highlighted node: at=${highlightedNode.at}, pos=${highlightedNode.pos}`);
           // 在 filteredActions 中查找该节点（使用 at+pos 匹配，因为对象引用可能变化）
-          visHighlightIdx = visible.findIndex(a => 
+          visHighlightIdx = visible.findIndex(a =>
             Math.abs((a.at || 0) - (highlightedNode.at || 0)) < 1 &&
             Math.abs((a.pos || 0) - (highlightedNode.pos || 0)) < 1
           );
           console.log(`[draw] visHighlightIdx=${visHighlightIdx}`);
         }
-        
+
         // highlightAt/highlightPos：始终使用全数组索引对应的值（支持节点不在 visible 范围内）
         const highlightAt = ev.actions[highlightIdx.value]?.at;
         const highlightPos = ev.actions[highlightIdx.value]?.pos;
-        
+
         Core.draw(ctx, canvas, visible, {
           dragIdx: visDragIdx >= 0 ? visDragIdx : dragIdx,  // 如果找不到则保持全数组索引
           dragAt: ev.actions[dragIdx]?.at,
@@ -1204,9 +1293,9 @@ createApp({
           highlightPos: highlightPos,      // 全数组的 pos 值
           playing: playing.value, playheadMs: playheadMs.value,
           isRightSelecting, selStartX, selStartY, selCurX, selCurY,
-            vm: displayRangeMs.value,
-            offsetMs: actualOffsetMs
-          });
+          vm: displayRangeMs.value,
+          offsetMs: actualOffsetMs
+        });
         return;
       }
       // fallback 原始实现（core 未加载时用）
@@ -1376,6 +1465,9 @@ createApp({
       if (tab === 'editor') nextTick(() => setTimeout(draw, 60));
     }
 
+    // 从 URL 参数中读取 scriptId 和 eventId，用于打开特定事件的编辑器
+    const urlParams = window.__HFES_URL_PARAMS__ || {};
+
     onMounted(async () => {
       const store = await loadStore();
       Object.assign(settings, store.settings);
@@ -1385,6 +1477,35 @@ createApp({
       if (Array.isArray(store.domainRuleGroups)) {
         domainRuleGroups.push(...store.domainRuleGroups);
       }
+
+      // 如果 URL 中有 scriptId 和 eventId，自动打开对应事件的编辑器
+      if (urlParams.scriptId && urlParams.eventId) {
+        const script = scripts.value.find(s => s.id === urlParams.scriptId);
+        if (script) {
+          const event = script.funscript && Array.isArray(script.funscript.events)
+            ? script.funscript.events.find(ev => ev.id === urlParams.eventId)
+            : null;
+
+          if (event) {
+            // 切换到编辑器 tab
+            mainTab.value = 'editor';
+
+            // 找到对应的事件索引
+            let eventIndex = 0;
+            if (script.funscript && Array.isArray(script.funscript.events)) {
+              eventIndex = script.funscript.events.findIndex(ev => ev.id === urlParams.eventId);
+            }
+
+            await nextTick();
+            setTimeout(() => {
+              activeName.value = String(eventIndex >= 0 ? eventIndex : 0);
+              editScript({ id: urlParams.scriptId, funscript: script.funscript });
+              ElMessage.success('已打开事件 ' + urlParams.eventId + ' 的编辑器');
+            }, 300);
+          }
+        }
+      }
+
       draw();
       window.addEventListener('resize', draw);
     });
