@@ -280,7 +280,8 @@
       .power-drag { height: 24px; display: flex; align-items: center; padding: 0 8px; cursor: grab;
                     background: linear-gradient(135deg, #7c3aed, #9d4edd); color: #fff; font-size: 12px; font-weight: 600; }
       .power-drag:active { cursor: grabbing; }
-      .power-body { padding: 8px; display: flex; align-items: center; gap: 12px; }
+      .power-body { padding: 5px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;justify-content: space-around;}
+      .power-channels-row { display: flex; padding-top: 4px; }
       .power-channel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
       .power-value { font-size: 14px; font-weight: 600; color: #7fd08f; background: #26262f;
                      padding: 4px 8px; border-radius: 4px; min-width: 50px; text-align: center; }
@@ -320,7 +321,7 @@
 
     const panel = el('div', 'panel');
 
-    // 创建面板内容
+    // 创建面板内容 - 开关在顶部单独一行，下面两行分别是 AB 通道
     const switchEl = document.createElement('div');
     switchEl.id = 'powerSwitch';
     switchEl.className = 'power-switch';
@@ -329,23 +330,25 @@
     panel.innerHTML = `
       <div class="power-panel">
         <div class="power-body">
-          <div class="power-channel">
-            <div class="power-value" id="powerAValue">0/70</div>
-            <div class="power-controls"><span></span><span></span></div>
-          </div>
-          <div class="power-channel">
-            <div class="power-value" id="powerBValue">0/70</div>
-            <div class="power-controls"><span></span><span></span></div>
-          </div>
           <div class="power-channel" style="gap:4px;">
             <span></span>
+          </div>
+        </div>
+        <div class="power-body power-channels-row">
+          <div class="power-channel">
+            <div class="power-value" id="powerAValue">0/0</div>
+            <div class="power-controls"><span></span><span></span></div>
+          </div>
+          <div class="power-channel">
+            <div class="power-value" id="powerBValue">0/0</div>
+            <div class="power-controls"><span></span><span></span></div>
           </div>
         </div>
       </div>
     `;
 
-    // 插入 switchEl
-    const switchContainer = panel.querySelector('.power-channel:last-child span');
+    // 将 switchEl 插入到顶部的 span 位置
+    const switchContainer = panel.querySelector('.power-body:first-child span');
     if (switchContainer) {
       switchContainer.parentNode.insertBefore(switchEl, switchContainer);
       switchContainer.remove();
@@ -678,8 +681,8 @@
     const shadowEl = powerHost.shadowRoot;
     const valAEl = shadowEl.querySelector('#powerAValue');
     const valBEl = shadowEl.querySelector('#powerBValue');
-    if (valAEl) valAEl.textContent = `${powerAValue}/${powerALimit}`;
-    if (valBEl) valBEl.textContent = `${powerBValue}/${powerBLimit}`;
+    if (valAEl) valAEl.textContent = `A:${powerAValue}/${powerALimit}`;
+    if (valBEl) valBEl.textContent = `B:${powerBValue}/${powerBLimit}`;
     // 更新开关状态
     const switchEl = powerHost.shadowRoot.querySelector('#powerSwitch');
     if (switchEl) {
