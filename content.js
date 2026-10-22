@@ -298,11 +298,17 @@
   }
 
   function createPowerPanel() {
+    // 先移除已存在的面板（防止切换桌面/手机模式时出现多个）
+    const existingPanel = document.getElementById('__hfes_power_panel__');
+    if (existingPanel) {
+      existingPanel.remove();
+    }
+    
     if (powerHost && powerHost.parentElement) return;
 
     powerHost = document.createElement('div');
     powerHost.id = '__hfes_power_panel__';
-    powerHost.style = 'z-index: 999999;position: absolute;left: 85%;top: 15%;';
+    powerHost.style = 'z-index: 999999;position: absolute;left: 1%;top: 4%;';
 
     // 创建 shadow DOM 以隔离样式
     const shadow = powerHost.attachShadow({ mode: 'open' });
@@ -351,25 +357,30 @@
     if (minusA) {
       minusA.className = 'power-btn minus';
       minusA.textContent = '−';
-      // 长按功能：按下时开始快速增加，松开时停止
+      // 长按功能：按下时开始快速清空，松开时停止（支持鼠标和触摸）
       let decrementInterval = null;
+      let touchStartDecrementA = null;
+      
       const startDecrementA = () => {
         if (decrementInterval) return;
         decrementInterval = setInterval(async () => {
+          powerAValue = 0;
           const result = await howlApi('/decrement_power', { channel: 0, step: 200 });
           if (!result.ok || !result.body || !result.body.options) return;
           powerAValue = result.body.options.power_a ?? 0;
-          powerBValue = result.body.options.power_b ?? 0;
           updatePowerDisplay();
         }, 100);
       };
+      
       const stopDecrementA = () => {
         if (decrementInterval) {
           clearInterval(decrementInterval);
           decrementInterval = null;   
         }
+        touchStartDecrementA = null;
       };
       
+      // 鼠标长按事件
       minusA.onmousedown = (e) => {
         e.preventDefault();
         startDecrementA();
@@ -377,11 +388,18 @@
       minusA.onmouseup = stopDecrementA;
       minusA.onmouseleave = stopDecrementA;
       
+      // 触摸长按事件（移动端）
+      minusA.ontouchstart = (e) => {
+        e.preventDefault();
+        if (!decrementInterval) startDecrementA();
+        touchStartDecrementA = true;
+      };
+      minusA.ontouchend = stopDecrementA;
+      minusA.ontouchcancel = stopDecrementA;
+      
       // 正常点击（短按）功能
-      const originalClickHandler = minusA.onclick;
       minusA.onclick = async (e) => {
-        if (decrementInterval) return; // 正在长按时不触发短按
-        if (originalClickHandler) originalClickHandler(e);
+        if (decrementInterval || touchStartDecrementA) return; // 正在长按时不触发短按
         const result = await howlApi('/decrement_power', { channel: 0, step: 1 });
         if (result.ok && result.body && result.body.options) {
           powerAValue = result.body.options.power_a ?? 0;
@@ -393,25 +411,30 @@
     if (plusA) {
       plusA.className = 'power-btn plus';
       plusA.textContent = '+';
-      // 长按功能：按下时开始快速增加，松开时停止
+      // 长按功能：按下时开始快速增加，松开时停止（支持鼠标和触摸）
       let incrementInterval = null;
+      let touchStartIncrementA = false;
+      
       const startIncrementA = () => {
         if (incrementInterval) return;
         incrementInterval = setInterval(async () => {
-          const result = await howlApi('/increment_power', { channel: 0, step: 1 });
+          const result = await howlApi('/increment_power', { channel: 0, step: 20 });
           if (!result.ok || !result.body || !result.body.options) return;
           powerAValue = result.body.options.power_a ?? 0;
           powerBValue = result.body.options.power_b ?? 0;
           updatePowerDisplay();
         }, 100);
       };
+      
       const stopIncrementA = () => {
         if (incrementInterval) {
           clearInterval(incrementInterval);
           incrementInterval = null;
         }
+        touchStartIncrementA = false;
       };
       
+      // 鼠标长按事件
       plusA.onmousedown = (e) => {
         e.preventDefault();
         startIncrementA();
@@ -419,11 +442,18 @@
       plusA.onmouseup = stopIncrementA;
       plusA.onmouseleave = stopIncrementA;
       
+      // 触摸长按事件（移动端）
+      plusA.ontouchstart = (e) => {
+        e.preventDefault();
+        if (!incrementInterval) startIncrementA();
+        touchStartIncrementA = true;
+      };
+      plusA.ontouchend = stopIncrementA;
+      plusA.ontouchcancel = stopIncrementA;
+      
       // 正常点击（短按）功能
-      const originalClickHandler = plusA.onclick;
       plusA.onclick = async (e) => {
-        if (incrementInterval) return; // 正在长按时不触发短按
-        if (originalClickHandler) originalClickHandler(e);
+        if (incrementInterval || touchStartIncrementA) return; // 正在长按时不触发短按
         const result = await howlApi('/increment_power', { channel: 0, step: 1 });
         if (result.ok && result.body && result.body.options) {
           powerAValue = result.body.options.power_a ?? 0;
@@ -438,24 +468,30 @@
     if (minusB) {
       minusB.className = 'power-btn minus';
       minusB.textContent = '−';
-      // 长按功能：按下时开始快速增加，松开时停止
+      // 长按功能：按下时开始快速清空，松开时停止（支持鼠标和触摸）
       let decrementInterval = null;
+      let touchStartDecrementB = false;
+      
       const startDecrementB = () => {
         if (decrementInterval) return;
         decrementInterval = setInterval(async () => {
+          powerBValue = 0;
           const result = await howlApi('/decrement_power', { channel: 1, step: 200 });
           if (!result.ok || !result.body || !result.body.options) return;
           powerBValue = result.body.options.power_b ?? 0;
           updatePowerDisplay();
         }, 100);
       };
+      
       const stopDecrementB = () => {  
         if (decrementInterval) {
           clearInterval(decrementInterval);
           decrementInterval = null;   
         }
+        touchStartDecrementB = false;
       };
       
+      // 鼠标长按事件
       minusB.onmousedown = (e) => {
         e.preventDefault();
         startDecrementB();
@@ -463,11 +499,18 @@
       minusB.onmouseup = stopDecrementB;
       minusB.onmouseleave = stopDecrementB;
       
+      // 触摸长按事件（移动端）
+      minusB.ontouchstart = (e) => {
+        e.preventDefault();
+        if (!decrementInterval) startDecrementB();
+        touchStartDecrementB = true;
+      };
+      minusB.ontouchend = stopDecrementB;
+      minusB.ontouchcancel = stopDecrementB;
+      
       // 正常点击（短按）功能
-      const originalClickHandler = minusB.onclick;
       minusB.onclick = async (e) => {
-        if (decrementInterval) return; // 正在长按时不触发短按
-        if (originalClickHandler) originalClickHandler(e);
+        if (decrementInterval || touchStartDecrementB) return; // 正在长按时不触发短按
         const result = await howlApi('/decrement_power', { channel: 1, step: 1 });
         if (result.ok && result.body && result.body.options) {
           powerBValue = result.body.options.power_b ?? 0;   
@@ -478,24 +521,29 @@
     if (plusB) {
       plusB.className = 'power-btn plus';
       plusB.textContent = '+';
-      // 长按功能：按下时开始快速增加，松开时停止
+      // 长按功能：按下时开始快速增加，松开时停止（支持鼠标和触摸）
       let incrementInterval = null;
+      let touchStartIncrementB = false;
+      
       const startIncrementB = () => {
         if (incrementInterval) return;
         incrementInterval = setInterval(async () => {
-          const result = await howlApi('/increment_power', { channel: 1, step: 1 });
+          const result = await howlApi('/increment_power', { channel: 1, step: 20 });
           if (!result.ok || !result.body || !result.body.options) return;
           powerBValue = result.body.options.power_b ?? 0;
           updatePowerDisplay();
         }, 100);
       };
+      
       const stopIncrementB = () => {
         if (incrementInterval) {
           clearInterval(incrementInterval);
           incrementInterval = null;
         }
+        touchStartIncrementB = false;
       };
       
+      // 鼠标长按事件
       plusB.onmousedown = (e) => {
         e.preventDefault();
         startIncrementB();
@@ -503,11 +551,18 @@
       plusB.onmouseup = stopIncrementB;
       plusB.onmouseleave = stopIncrementB;
       
+      // 触摸长按事件（移动端）
+      plusB.ontouchstart = (e) => {
+        e.preventDefault();
+        if (!incrementInterval) startIncrementB();
+        touchStartIncrementB = true;
+      };
+      plusB.ontouchend = stopIncrementB;
+      plusB.ontouchcancel = stopIncrementB;
+      
       // 正常点击（短按）功能
-      const originalClickHandler = plusB.onclick;
       plusB.onclick = async (e) => {
-        if (incrementInterval) return; // 正在长按时不触发短按
-        if (originalClickHandler) originalClickHandler(e);
+        if (incrementInterval || touchStartIncrementB) return; // 正在长按时不触发短按
         const result = await howlApi('/increment_power', { channel: 1, step: 1 });
         if (result.ok && result.body && result.body.options) {
           powerBValue = result.body.options.power_b ?? 0;
@@ -557,6 +612,7 @@
     let isDragging = false;
     let startX, startY, initialLeft, initialTop;
 
+    // 鼠标拖动事件
     el.addEventListener('mousedown', (e) => {
       if (e.target.tagName === 'BUTTON' || e.target.classList.contains('power-switch')) return;
       isDragging = true;
@@ -568,6 +624,19 @@
       el.style.cursor = 'grabbing';
     });
 
+    // 触摸拖动事件（手机浏览器）
+    let touchStartX, touchStartY, touchInitialLeft, touchInitialTop;
+    el.addEventListener('touchstart', (e) => {
+      if (e.target.tagName === 'BUTTON' || e.target.classList.contains('power-switch')) return;
+      isDragging = true;
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      const rect = el.getBoundingClientRect();
+      touchInitialLeft = rect.left;
+      touchInitialTop = rect.top;
+      el.style.cursor = 'grabbing';
+    }, { passive: true });
+
     window.addEventListener('mousemove', (e) => {
       if (!isDragging) return;
       const dx = e.clientX - startX;
@@ -577,9 +646,30 @@
       el.style.transform = 'none';
     });
 
+    window.addEventListener('touchmove', (e) => {
+      if (!isDragging) return;
+      // 阻止默认滚动行为
+      e.preventDefault();
+      const touch = e.touches[0];
+      const dx = touch.clientX - touchStartX;
+      const dy = touch.clientY - touchStartY;
+      el.style.left = `${touchInitialLeft + dx}px`;
+      el.style.top = `${touchInitialTop + dy}px`;
+      el.style.transform = 'none';
+    }, { passive: false });
+
     window.addEventListener('mouseup', () => {
-      isDragging = false;
-      el.style.cursor = '';
+      if (isDragging) {
+        isDragging = false;
+        el.style.cursor = '';
+      }
+    });
+
+    window.addEventListener('touchend', () => {
+      if (isDragging) {
+        isDragging = false;
+        el.style.cursor = '';
+      }
     });
   }
 
