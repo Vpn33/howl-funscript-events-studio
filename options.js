@@ -182,6 +182,7 @@ const app = createApp({
     const powerBLimit = ref(0);      // B 通道上限
     const powerAValue = ref(0);       // A 通道当前值
     const powerBValue = ref(0);       // B 通道当前值
+    const currentPlayingTitle = ref('');   // 当前播放的歌曲标题
     
     // 从 store 加载保存的 settings（通过 broker.js 桥接）
     onMounted(async () => {
@@ -278,6 +279,12 @@ const app = createApp({
           powerAValue.value = result.body.options.power_a || 0;
           powerBValue.value = result.body.options.power_b || 0;
           powerOn.value = result.body.player && result.body.player.playing;
+          // 更新当前播放的歌曲标题
+          if (result.body.player && result.body.player.title) {
+            currentPlayingTitle.value = result.body.player.title;
+          } else {
+            currentPlayingTitle.value = '';
+          }
         } else {
           throw new Error(result.error || '获取状态失败');
         }
@@ -1673,7 +1680,7 @@ const app = createApp({
       // 表格高亮样式方法（必须加入到 return 中才能被模板使用）
       highlightedRowClass,
       // ==================== 电源控制面板 ====================
-      powerOn, powerALimit, powerBLimit, powerAValue, powerBValue,
+      powerOn, powerALimit, powerBLimit, powerAValue, powerBValue, currentPlayingTitle,
       formatChannel, togglePowerSwitch, incrementPower, decrementPower, changePower
     };
   }
