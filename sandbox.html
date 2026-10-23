@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="lib/element-plus.css">
 <script src="lib/vue.global.prod.js"></script>
 <script src="lib/element-plus.min.js"></script>
+<script src="lib/icons-vue.iife.min.js"></script>
 <style>
   body { margin: 0; background: #f5f7fa; font-family: "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; min-width: 980px; }
   #app { max-width: 1180px; margin: 0 auto; padding: 16px; }
@@ -37,6 +38,7 @@
   .url-empty { color: #c0c4cc; font-size: 12px; }
   /* 表格高亮行样式 */
   .table-row-highlight { background-color: #ecf5ff !important; }
+  #pane-howlDevice .el-button+.el-button{margin-left:0px;}
 </style>
 </head>
 <body>
@@ -308,6 +310,37 @@
       <el-card shadow="never">
         <template #header><b>JSON 输出</b></template>
         <el-input type="textarea" :rows="10" class="json-box" :model-value="funscriptJson" readonly></el-input>
+      </el-card>
+    </el-tab-pane>
+
+    <!-- ============ Howl 设备 ============ -->
+    <el-tab-pane label="Howl 设备" name="howlDevice">
+      <el-card shadow="never" class="mb8">
+        <template #header><b>Howl 设备控制</b></template>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:20px;padding:20px;">
+          <!-- 开关按钮 -->
+          <el-button link @click="togglePowerSwitch" :title="powerOn ? '点击暂停' : '点击播放'">
+            <el-icon :size="28" :color="powerOn?'var(--el-color-danger)':'var(--el-color-primary)'">
+                <component :is="powerOn ? 'VideoPause' : 'VideoPlay'" />
+            </el-icon>
+          </el-button>
+            
+          <!-- A 通道 -->
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span style="color:#606266;font-size:14px;width:50px;">A 通道</span>
+            {{ powerAValue }} / {{ powerALimit }}
+            <el-button size="small" type="danger" v-long-press="{ handler: () => changePower(0, -1, 200), interval: 100 }" @click="changePower(0, -1)">−</el-button>
+            <el-button size="small" type="primary" v-long-press="{ handler: () => changePower(0, 1), interval: 100 }" @click="changePower(0, 1)">+</el-button>
+          </div>
+
+          <!-- B 通道 -->
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span style="color:#606266;font-size:14px;width:50px;">B 通道</span>
+            {{ powerBValue }} / {{ powerBLimit }}
+            <el-button size="small" type="danger" v-long-press="{ handler: () => changePower(1, -1, 200), interval: 100 }" @click="changePower(1, -1)">−</el-button>
+            <el-button size="small" type="primary" v-long-press="{ handler: () => changePower(1, 1), interval: 100 }" @click="changePower(1, 1)">+</el-button>
+          </div>
+        </div>
       </el-card>
     </el-tab-pane>
 

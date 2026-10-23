@@ -421,7 +421,7 @@
       const startIncrementA = () => {
         if (incrementInterval) return;
         incrementInterval = setInterval(async () => {
-          const result = await howlApi('/increment_power', { channel: 0, step: 20 });
+          const result = await howlApi('/increment_power', { channel: 0, step: 1 });
           if (!result.ok || !result.body || !result.body.options) return;
           powerAValue = result.body.options.power_a ?? 0;
           powerBValue = result.body.options.power_b ?? 0;
@@ -531,7 +531,7 @@
       const startIncrementB = () => {
         if (incrementInterval) return;
         incrementInterval = setInterval(async () => {
-          const result = await howlApi('/increment_power', { channel: 1, step: 20 });
+          const result = await howlApi('/increment_power', { channel: 1, step: 1 });
           if (!result.ok || !result.body || !result.body.options) return;
           powerBValue = result.body.options.power_b ?? 0;
           updatePowerDisplay();

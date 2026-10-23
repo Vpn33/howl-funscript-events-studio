@@ -163,7 +163,7 @@ const SAMPLE = {
   version: "1.0"
 };
 
-createApp({
+const app = createApp({
   setup() {
     // ================= 全局设置 =================
     const settings = reactive({
@@ -176,18 +176,28 @@ createApp({
     });
     const displayRangeMs = ref(settings.zoomMin);  // 当前显示范围（从末尾开始，单位 ms）
 
+    // ==================== 电源控制面板 ====================
+    const powerOn = ref(false);       // 开关状态
+    const powerALimit = ref(0);      // A 通道上限
+    const powerBLimit = ref(0);      // B 通道上限
+    const powerAValue = ref(0);       // A 通道当前值
+    const powerBValue = ref(0);       // B 通道当前值
+    
     // 从 store 加载保存的 settings（通过 broker.js 桥接）
     onMounted(async () => {
       try {
         const stored = await loadStore();
         console.log('[options] 加载设置:', stored.settings);
         if (stored.settings && stored.settings.zoomMin !== undefined) {
-          settings.zoomMin = stored.settings.zoomMin;
+          Object.assign(settings, stored.settings);
           displayRangeMs.value = settings.zoomMin;
           console.log('[options] 使用已保存的 zoomMin:', settings.zoomMin, 'ms');
         } else {
           console.log('[options] 使用默认 zoomMin:', settings.zoomMin, 'ms');
         }
+        
+        // 启动电源状态轮询
+        updatePowerDisplay();
       } catch (e) {
         console.warn('[options] 加载设置失败:', e);
       }
@@ -237,6 +247,125 @@ createApp({
       }, 400);
     }
     watch(settings, persistSettings, { deep: true });
+
+    // ==================== 电源控制面板方法 ====================
+    
+    // 直接调用 Howl API（通过 fetch）
+    async function howlApi(path, body) {
+      // 直接从 settings 获取，不需要通过 sendBg
+      const host = settings.host;
+      if (!host) throw new Error('未配置 Howl 设备地址');
+      const base = host.replace(/\/+$/, '');
+      const resp = await fetch(base + path, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + (settings.apiKey || ''),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body === undefined ? {} : body)
+      });
+      const json = await resp.json().catch(() => ({}));
+      return { ok: resp.ok, status: resp.status, body: json };
+    }
+
+    // 更新电源显示
+    async function updatePowerDisplay() {
+      try {
+       const result = await howlApi('/status');
+        if (result.ok && result.body) {
+          powerALimit.value = result.body.options.power_a_limit || 70;
+          powerBLimit.value = result.body.options.power_b_limit || 70;
+          powerAValue.value = result.body.options.power_a || 0;
+          powerBValue.value = result.body.options.power_b || 0;
+          powerOn.value = result.body.player && result.body.player.playing;
+        } else {
+          throw new Error(result.error || '获取状态失败');
+        }
+      } catch (e) {
+        // 静默失败，避免弹窗干扰用户
+        console.warn('[options] updatePowerDisplay failed:', e);
+      }
+    }
+    
+    // 格式化通道显示（当前值/上限）
+    function formatChannel(channel) {
+      const val = channel === 'A' ? powerAValue.value : powerBValue.value;
+      const limit = channel === 'A' ? powerALimit.value : powerBLimit.value;
+      return `${val}/${limit}`;
+    }
+    
+    // 切换开关状态
+    async function togglePowerSwitch() {
+      try {
+        if (powerOn.value) {
+          // 停止播放
+          const result = await howlApi('/stop_player', {});
+          if (result.ok && result.body && result.body.player) {
+            powerOn.value = false;
+            ElMessage.success('已停止');
+          } else {
+            ElMessage.error('停止失败：' + (result.error || '未知错误'));
+          }
+        } else {
+          // 开始播放
+          const result = await howlApi('/start_player', {});
+          if (result.ok && result.body && result.body.player) {
+            powerOn.value = true;
+            ElMessage.success('已启动');
+          } else {
+            ElMessage.error('启动失败：' + (result.error || '未知错误'));
+          }
+        }
+        await updatePowerDisplay();
+      } catch (e) {
+        ElMessage.error('开关操作失败：' + e.message);
+      }
+    }
+
+    // 增加通道功率
+    async function incrementPower(channel) {
+      try {
+        const result = await howlApi('/increment_power', { channel, step: 1 });
+        if (result.ok && result.body && result.body.options) {
+          powerAValue.value = result.body.options.power_a || 0;
+          powerBValue.value = result.body.options.power_b || 0;
+        } else {
+          ElMessage.warning('增加功率失败：' + (result.error || '未知错误'));
+        }
+      } catch (e) {
+        console.error('[options] incrementPower:', e);
+      }
+    }
+    
+    // 减少通道功率
+    async function decrementPower(channel) {
+      try {
+        const result = await howlApi('/decrement_power', { channel, step: 1 });
+        if (result.ok && result.body && result.body.options) {
+          powerAValue.value = result.body.options.power_a || 0;
+          powerBValue.value = result.body.options.power_b || 0;
+        } else {
+          ElMessage.warning('减少功率失败：' + (result.error || '未知错误'));
+        }
+      } catch (e) {
+        console.error('[options] decrementPower:', e);
+      }
+    }
+	
+	async function changePower(channel, direction, step = 1) {
+	  // 如果是长按刚刚结束，忽略这次的短按
+	  const btn = window.event?.target?.closest('button');
+	  if (btn && btn.__isLongPress) {
+		return;
+	  }
+	  const url = direction > 0 ? '/increment_power' : '/decrement_power'
+	  const res = await howlApi(url, { channel, step })
+
+	  if (!res?.ok || !res.body?.options) return
+
+	  powerAValue.value = res.body.options.power_a ?? 0
+	  powerBValue.value = res.body.options.power_b ?? 0
+	}
 
     // ---- 备份 / 恢复 ----
     function pickBackupFile() {
@@ -1542,7 +1671,156 @@ createApp({
       onSelectionChange, deleteSelected, clearAllActions, deleteByRange,
       onMainTabChange, saveZoomMin, zoomMinSaved,
       // 表格高亮样式方法（必须加入到 return 中才能被模板使用）
-      highlightedRowClass
+      highlightedRowClass,
+      // ==================== 电源控制面板 ====================
+      powerOn, powerALimit, powerBLimit, powerAValue, powerBValue,
+      formatChannel, togglePowerSwitch, incrementPower, decrementPower, changePower
     };
   }
-}).use(ElementPlus).mount('#app');
+});
+// 初始化全部图标
+for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+  app.component(key, component);
+}
+// 注册长按事件
+app.directive('longPress', {
+  mounted(el, binding) {
+    const opts = typeof binding.value === 'function'
+      ? { handler: binding.value }
+      : (binding.value || {})
+
+    const handler = opts.handler
+    if (typeof handler !== 'function') {
+      console.warn('[v-long-press] 需要传函数，例如 v-long-press="() => fn(1)"')
+      return
+    }
+
+    const delay = opts.delay ?? 500          // 多久算长按
+    const interval = opts.interval ?? 100    // 长按后每次间隔
+    const moveThreshold = opts.moveThreshold ?? 10
+
+    let holdTimer = null
+    let repeatTimer = null
+    let running = false
+    let didLongPress = false
+    let moved = false
+    let startX = 0
+    let startY = 0
+    let activeId = null
+
+    const clearTimers = () => {
+      if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null }
+      if (repeatTimer !== null) { clearTimeout(repeatTimer); repeatTimer = null }
+    }
+
+    const stop = () => {
+      running = false
+      clearTimers()
+    }
+
+    // 串行核心：await 完再排下一次
+    const loop = async () => {
+      if (!running) return
+      try {
+        await handler()
+      } catch (_) {
+        // 单次失败不打断长按
+      }
+      if (!running) return
+      repeatTimer = setTimeout(loop, interval)
+    }
+
+    // 长按/滑动后拦截紧随其后的 click
+    const blockNextClick = () => {
+      const block = (ev) => {
+        ev.stopPropagation()
+        ev.preventDefault()
+        document.removeEventListener('click', block, true)
+      }
+      document.addEventListener('click', block, true)
+      setTimeout(() => {
+        document.removeEventListener('click', block, true)
+      }, 300)
+    }
+
+    const onDown = (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      if (activeId !== null) return
+
+      activeId = e.pointerId
+      startX = e.clientX
+      startY = e.clientY
+      didLongPress = false
+      moved = false
+
+      stop()
+      running = true
+      holdTimer = setTimeout(() => {
+        holdTimer = null
+        didLongPress = true
+        loop()
+      }, delay)
+    }
+
+    const onMove = (e) => {
+      if (e.pointerId !== activeId || !running) return
+      if (
+        Math.abs(e.clientX - startX) > moveThreshold ||
+        Math.abs(e.clientY - startY) > moveThreshold
+      ) {
+        moved = true
+        stop()
+      }
+    }
+
+    const onUp = (e) => {
+      if (e.pointerId !== activeId) return
+      activeId = null
+      const shouldBlock = didLongPress || moved
+      stop()
+      if (shouldBlock) {
+        el.__isLongPress = true // 打个标记
+        setTimeout(() => el.__isLongPress = false, 200) // 200ms后清除
+      }
+    }
+
+    const onLeave = (e) => {
+      if (e.pointerId !== activeId) return
+      activeId = null
+      const shouldBlock = didLongPress
+      stop()
+      if (shouldBlock) blockNextClick()
+    }
+
+    const onContextMenu = (e) => e.preventDefault()
+
+    el.addEventListener('pointerdown', onDown)
+    el.addEventListener('pointermove', onMove)
+    el.addEventListener('pointerup', onUp)
+    el.addEventListener('pointercancel', onUp)
+    el.addEventListener('pointerleave', onLeave)
+    el.addEventListener('contextmenu', onContextMenu)
+
+    // 防止移动端文本选择、长按菜单
+    el.style.userSelect = 'none'
+    el.style.webkitUserSelect = 'none'
+    el.style.webkitTouchCallout = 'none'
+    el.style.touchAction = 'manipulation'
+
+    el.__longPressCleanup = () => {
+      stop()
+      el.removeEventListener('pointerdown', onDown)
+      el.removeEventListener('pointermove', onMove)
+      el.removeEventListener('pointerup', onUp)
+      el.removeEventListener('pointercancel', onUp)
+      el.removeEventListener('pointerleave', onLeave)
+      el.removeEventListener('contextmenu', onContextMenu)
+    }
+  },
+
+  unmounted(el) {
+    el.__longPressCleanup?.()
+    delete el.__longPressCleanup
+  }
+});
+app.use(ElementPlus).mount('#app')
