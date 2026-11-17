@@ -77,12 +77,11 @@
     // 代入：clickX = (ms - offsetMs) / vm * w
     // 反过来：ms = (clickX / w) * vm + offsetMs
     // draw 中的 Y = (1 - pos/100) * h - paddingY
-    // clickY = y_mouse - paddingY
-    // 代入：clickY = (1 - pos/100) * h - paddingY
-    // 反过来：pos = (1 - (clickY + paddingY) / h) * 100
+    // 使用 canvas 完整高度计算（忽略 padding，让鼠标在顶部和底部都能映射到 0 和 100）
+    // 反过来：pos = (1 - y_mouse / h) * 100
     return {
       ms: clamp((clickX / w) * vm + offsetMs, offsetMs, vm + offsetMs),
-      pos: Math.max(0, Math.min(100, (1 - (clickY + paddingY) / h) * 100)),
+      pos: Math.max(0, Math.min(100, (1 - y / h) * 100)),
       x: clickX,
       y: clickY
     };
