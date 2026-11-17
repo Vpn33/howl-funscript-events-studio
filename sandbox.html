@@ -281,6 +281,8 @@
                          @click="deleteSelected">删除选中 ({{ selectedActions.length }})</el-button>
               <el-button size="small" type="danger" plain :disabled="!activeEvent || !activeEvent.actions.length"
                          @click="clearAllActions">清空全部</el-button>
+              <el-button size="small" type="info" plain :disabled="!selectedActions.length || selectedActions.length !== 2"
+                         @click="openSubdivideDialog">细分 ({{ selectedActions.length }}/{{ 2 }})</el-button>
               <el-divider direction="vertical"></el-divider>
               <span class="wg-label">按时间删除</span>
               <el-input-number v-model="rangeDelStart" :min="0" :step="100" size="small" :controls="false" style="width:90px"></el-input-number>
@@ -578,6 +580,20 @@
     <template #footer>
       <el-button @click="pulseDialogVisible = false">取消</el-button>
       <el-button type="primary" @click="doImportPulse">转换并追加到当前事件</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 细分对话框 -->
+  <el-dialog v-model="subdivideDialogVisible" title="细分动作" width="500px">
+    <el-form label-width="80px">
+      <el-form-item label="段数">
+        <el-slider v-model="subdivideCount" :min="1" :max="100" style="width: 100%"></el-slider>
+        <div style="text-align:center;font-size:14px;margin-top:5px;">{{ subdivideCount }}</div>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="subdivideDialogVisible = false">取消</el-button>
+      <el-button type="primary" @click="doSubdivide">确定</el-button>
     </template>
   </el-dialog>
 </div>

@@ -994,6 +994,8 @@ const app = createApp({
     const selectedActions = ref([]);
     const rangeDelStart = ref(null);
     const rangeDelEnd = ref(null);
+    const subdivideDialogVisible = ref(false);
+    const subdivideCount = ref(10);
 
     function onSelectionChange(rows) { selectedActions.value = rows; }
     function clearTableSelection() {
@@ -1032,6 +1034,84 @@ const app = createApp({
       const removed = before - ev.actions.length;
       if (!removed) return ElMessage.info(`时间范围 ${s}~${e}ms 内没有动作`);
       ElMessage.success(`已删除 ${removed} 个动作 (${s}~${e}ms)`);
+    }
+
+    // ---------- 细分功能 ----------
+    function openSubdivideDialog() {
+      const ev = activeEvent.value;
+      if (!ev) return ElMessage.warning('请先选择一个事件');
+      subdivideCount.value = 10; // 重置滑块值
+      subdivideDialogVisible.value = true;
+    }
+
+    function doSubdivide() {
+      const ev = activeEvent.value;
+      if (!ev) return;
+
+      if (selectedActions.value.length !== 2) {
+        return ElMessage.warning('必须且只能选择两个节点进行细分');
+      }
+
+      if (subdivideCount.value < 1 || subdivideCount.value > 100) {
+        return ElMessage.warning('段数必须在 1-100 之间');
+      }
+
+      // 按时间排序，确保第一个和第二个节点正确
+      const [firstNode, secondNode] = [...selectedActions.value].sort((a, b) => a.at - b.at);
+      const firstAt = firstNode.at;
+      const secondAt = secondNode.at;
+
+      if (firstAt === secondAt) {
+        return ElMessage.warning('两个节点的时间位置不能相同');
+      }
+
+      // 计算时间间隔和分段数
+      const timeDiff = secondAt - firstAt;
+      const segments = subdivideCount.value;
+      const stepTime = timeDiff / segments;
+
+      // 创建新动作列表
+      const newActions = [];
+
+      // 添加第一个节点
+      newActions.push(firstNode);
+
+      // 插入中间的新节点（等分时间，pos 也按线性插值）
+      for (let i = 1; i < segments; i++) {
+        const targetAt = firstAt + i * stepTime;
+        // 计算 pos 的线性插值：从第一个节点的 pos 到第二个节点的 pos
+        const t = i / segments; // 0~1 之间的比例
+        const interpolatedPos = Math.round(firstNode.pos + (secondNode.pos - firstNode.pos) * t);
+        newActions.push({
+          id: `subdivide_${Date.now()}_${i}`,
+          at: targetAt,
+          pos: interpolatedPos
+        });
+      }
+
+      // 添加第二个节点（保持原位置）
+      newActions.push(secondNode);
+
+      // 替换原来的两个节点
+      const beforeLen = ev.actions.length;
+      const firstIdx = ev.actions.findIndex(a => a.id === firstNode.id);
+      const secondIdx = ev.actions.findIndex(a => a.id === secondNode.id);
+
+      if (firstIdx !== -1 && secondIdx !== -1) {
+        // 确保先找第一个节点（时间小的那个）
+        if (secondIdx < firstIdx) [firstIdx, secondIdx] = [secondIdx, firstIdx];
+
+        // 删除第二个节点，从第一个节点位置开始插入新节点
+        ev.actions.splice(secondIdx, 1); // 删除第二个节点
+        ev.actions.splice(firstIdx, 1, ...newActions); // 替换第一个节点为新节点列表
+      }
+
+      sortDedupe(activeIndex.value);
+      clearTableSelection();
+      subdivideDialogVisible.value = false;
+
+      const addedCount = segments + 1; // 新增的节点数（原两个节点被替换为 segments+1 个）
+      ElMessage.success(`已将 ${addedCount} 个动作细分为 ${segments + 1} 段，新增 ${segments - 1} 个节点`);
     }
 
     // ---------- 内置波形生成器（核心已抽至 wave-editor-core.js）----------
@@ -1674,8 +1754,8 @@ const app = createApp({
       onWheel, onTouchStart, onTouchMove, onTouchEnd, highlightIdx, onTableRowClick, origIdx,
       waveShapes, gen, appendWave,
       pulseDialogVisible, pulseText, pulseFileRef, pulseBreakFlat, pulseVariation, triggerPulseFile, onPulseFile, doImportPulse,
-      actionsTableRef, selectedActions, rangeDelStart, rangeDelEnd,
-      onSelectionChange, deleteSelected, clearAllActions, deleteByRange,
+      actionsTableRef, selectedActions, rangeDelStart, rangeDelEnd, subdivideDialogVisible, subdivideCount,
+      onSelectionChange, deleteSelected, clearAllActions, deleteByRange, openSubdivideDialog, doSubdivide,
       onMainTabChange, saveZoomMin, zoomMinSaved,
       // 表格高亮样式方法（必须加入到 return 中才能被模板使用）
       highlightedRowClass,
