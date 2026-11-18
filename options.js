@@ -34,7 +34,7 @@ async function waitForScripts() {
     const timeout = setTimeout(() => {
       reject(new Error('scripts 加载超时'));
     }, 2000);
-    
+
     // 监听 scripts 变化
     const check = () => {
       if (scripts.value.length > 0) {
@@ -42,7 +42,7 @@ async function waitForScripts() {
         resolve();
       }
     };
-    
+
     const timer = setInterval(check, 50);
     window.addEventListener('message', (e) => {
       if (e.data && e.data.func === 'check_scripts_ready') {
@@ -60,38 +60,38 @@ window.addEventListener('message', (e) => {
 
       // 等待 scripts 加载完成，然后设置全局标志（触发 Vue watch）
       waitForScripts()
-          .then(async () => {
-            try {
-              // 找到对应的脚本并触发编辑按钮操作
-              const funscriptIdx = scripts.value.findIndex(x => x.id === scriptId);
-              if (funscriptIdx >=0 ) {
-                console.log('[options] edit_event:', scriptId, eventId, '→', scripts.value[funscriptIdx].funscript.events.length, 'events');
-                  // 找到对应的事件索引
-                  let eventIndex =  scripts.value[funscriptIdx].funscript.events.findIndex(ev => ev.id === eventId);
+        .then(async () => {
+          try {
+            // 找到对应的脚本并触发编辑按钮操作
+            const funscriptIdx = scripts.value.findIndex(x => x.id === scriptId);
+            if (funscriptIdx >= 0) {
+              console.log('[options] edit_event:', scriptId, eventId, '→', scripts.value[funscriptIdx].funscript.events.length, 'events');
+              // 找到对应的事件索引
+              let eventIndex = scripts.value[funscriptIdx].funscript.events.findIndex(ev => ev.id === eventId);
 
-                  // 找到表格中的编辑按钮并点击
-                  setTimeout(() => {
-                    const tr = document.querySelector(`#pane-list .el-table__body tr:nth-child(${funscriptIdx + 1})`);
-                    if (tr) {
-                      const editBtn = tr.querySelector('td:last-child button.el-button--primary');
-                      if (editBtn) {
-                        editBtn.click();
-                        setTimeout(() => {
-                          if(eventIndex >= 0) {
-                            const tab = document.querySelector(`div #tab-${eventIndex}`);
-                            tab.click();
-                          }
-                        }, 300);
-
+              // 找到表格中的编辑按钮并点击
+              setTimeout(() => {
+                const tr = document.querySelector(`#pane-list .el-table__body tr:nth-child(${funscriptIdx + 1})`);
+                if (tr) {
+                  const editBtn = tr.querySelector('td:last-child button.el-button--primary');
+                  if (editBtn) {
+                    editBtn.click();
+                    setTimeout(() => {
+                      if (eventIndex >= 0) {
+                        const tab = document.querySelector(`div #tab-${eventIndex}`);
+                        tab.click();
                       }
-                    } else {
-                      console.warn('[options] 未找到表格行:', funscriptIdx);
-                    }
-                  }, 300);
+                    }, 300);
 
-                  ElMessage.success('已打开事件 ' + eventId + ' 的编辑器');
-                
-              } else {
+                  }
+                } else {
+                  console.warn('[options] 未找到表格行:', funscriptIdx);
+                }
+              }, 300);
+
+              ElMessage.success('已打开事件 ' + eventId + ' 的编辑器');
+
+            } else {
               console.error('[options] 脚本不存在或未包含 funscript:', scriptId, s);
               ElMessage.error('未找到该脚本或脚本数据不完整');
             }
@@ -183,7 +183,7 @@ const app = createApp({
     const powerAValue = ref(0);       // A 通道当前值
     const powerBValue = ref(0);       // B 通道当前值
     const currentPlayingTitle = ref('');   // 当前播放的歌曲标题
-    
+
     // 从 store 加载保存的 settings（通过 broker.js 桥接）
     onMounted(async () => {
       try {
@@ -196,7 +196,7 @@ const app = createApp({
         } else {
           console.log('[options] 使用默认 zoomMin:', settings.zoomMin, 'ms');
         }
-        
+
         // 启动电源状态轮询
         updatePowerDisplay();
       } catch (e) {
@@ -250,7 +250,7 @@ const app = createApp({
     watch(settings, persistSettings, { deep: true });
 
     // ==================== 电源控制面板方法 ====================
-    
+
     // 直接调用 Howl API（通过 fetch）
     async function howlApi(path, body) {
       // 直接从 settings 获取，不需要通过 sendBg
@@ -272,7 +272,7 @@ const app = createApp({
     // 更新电源显示
     async function updatePowerDisplay() {
       try {
-       const result = await howlApi('/status');
+        const result = await howlApi('/status');
         if (result.ok && result.body) {
           powerALimit.value = result.body.options.power_a_limit || 70;
           powerBLimit.value = result.body.options.power_b_limit || 70;
@@ -293,14 +293,14 @@ const app = createApp({
         console.warn('[options] updatePowerDisplay failed:', e);
       }
     }
-    
+
     // 格式化通道显示（当前值/上限）
     function formatChannel(channel) {
       const val = channel === 'A' ? powerAValue.value : powerBValue.value;
       const limit = channel === 'A' ? powerALimit.value : powerBLimit.value;
       return `${val}/${limit}`;
     }
-    
+
     // 切换开关状态
     async function togglePowerSwitch() {
       try {
@@ -343,7 +343,7 @@ const app = createApp({
         console.error('[options] incrementPower:', e);
       }
     }
-    
+
     // 减少通道功率
     async function decrementPower(channel) {
       try {
@@ -358,21 +358,21 @@ const app = createApp({
         console.error('[options] decrementPower:', e);
       }
     }
-	
-	async function changePower(channel, direction, step = 1) {
-	  // 如果是长按刚刚结束，忽略这次的短按
-	  const btn = window.event?.target?.closest('button');
-	  if (btn && btn.__isLongPress) {
-		return;
-	  }
-	  const url = direction > 0 ? '/increment_power' : '/decrement_power'
-	  const res = await howlApi(url, { channel, step })
 
-	  if (!res?.ok || !res.body?.options) return
+    async function changePower(channel, direction, step = 1) {
+      // 如果是长按刚刚结束，忽略这次的短按
+      const btn = window.event?.target?.closest('button');
+      if (btn && btn.__isLongPress) {
+        return;
+      }
+      const url = direction > 0 ? '/increment_power' : '/decrement_power'
+      const res = await howlApi(url, { channel, step })
 
-	  powerAValue.value = res.body.options.power_a ?? 0
-	  powerBValue.value = res.body.options.power_b ?? 0
-	}
+      if (!res?.ok || !res.body?.options) return
+
+      powerAValue.value = res.body.options.power_a ?? 0
+      powerBValue.value = res.body.options.power_b ?? 0
+    }
 
     // ---- 备份 / 恢复 ----
     function pickBackupFile() {
@@ -780,7 +780,7 @@ const app = createApp({
       ev.actions.push({ at: last + 500, pos: 50 });
       sortDedupe(activeIndex.value);
     }
-    function removeAction(idx) { activeEvent.value.actions.splice(idx, 1); clearTableSelection(); }
+    function removeAction(idx) { activeEvent.value.actions.splice(idx, 1); }
     function sortDedupe(i) { normalize(i); }
     function invert(i) { events[i].actions.forEach(a => a.pos = 100 - a.pos); }
 
@@ -878,12 +878,70 @@ const app = createApp({
       return ev.actions.indexOf(row);
     }
 
+    // 重新映射 selectedActions，确保引用正确（用于拖动后、排序后等场景）
+    function reMapSelectedActions() {
+      const ev = activeEvent.value;
+      if (!ev || !ev.actions.length) {
+        selectedActions.value = [];
+        return;
+      }
+
+      const mappedRows = [];
+      if (selectedActions.value.length > 0) {
+        for (const row of selectedActions.value) {
+          let matched = null;
+          for (let i = 0; i < ev.actions.length; i++) {
+            const action = ev.actions[i];
+            if (Math.abs((action.at || 0) - (row.at || 0)) < 1 &&
+              Math.abs((action.pos || 0) - (row.pos || 0)) < 1) {
+              matched = action; // 使用原始数组中的对象引用
+              break;
+            }
+          }
+          if (matched) {
+            mappedRows.push(matched);
+          }
+        }
+      }
+
+      selectedActions.value = mappedRows;
+    }
+
+    // 计算点到线段的距离（像素坐标）
+    function pointToLineDistance(px, py, x1, y1, x2, y2) {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      
+      if (dx === 0 && dy === 0) {
+        return Math.hypot(px - x1, py - y1);
+      }
+      
+      const t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+      const clampT = Math.max(0, Math.min(1, t));
+      
+      const closestX = x1 + clampT * dx;
+      const closestY = y1 + clampT * dy;
+      
+      return Math.hypot(px - closestX, py - closestY);
+    }
+
     // 点击表格行高亮 canvas 节点
     function onTableRowClick(row) {
       const ev = activeEvent.value;
       if (!ev || !ev.actions.length) return;
-      // 使用全数组索引（与 dragIdx 保持一致）
-      highlightIdx.value = ev.actions.indexOf(row);
+
+      // 使用 at+pos 精确匹配找到原始数组中的索引（因为 row 可能是 filteredActions 的副本）
+      let idx = -1;
+      for (let i = 0; i < ev.actions.length; i++) {
+        const action = ev.actions[i];
+        if (Math.abs((action.at || 0) - (row.at || 0)) < 1 &&
+          Math.abs((action.pos || 0) - (row.pos || 0)) < 1) {
+          idx = i;
+          break;
+        }
+      }
+
+      highlightIdx.value = idx;
       draw();
     }
 
@@ -901,52 +959,99 @@ const app = createApp({
         return '';
       }
 
-      // 通过 at+pos 查找高亮节点（不依赖索引）
-      let highlightedNode = null;
-      if (typeof highlightIdx.value === 'number' && highlightIdx.value >= 0 && highlightIdx.value < ev.actions.length) {
-        highlightedNode = ev.actions[highlightIdx.value];
-      }
+      // 优先高亮：检查是否是选中的节点
+      let is_selected = false;
+      if (selectedActions.value.length > 0) {
+        // 通过遍历 selectedActions 来查找当前行是否被选中
+        for (const selAction of selectedActions.value) {
+          const selAt = selAction.at;
+          const selPos = selAction.pos;
 
-      // 如果没有设置索引，尝试通过鼠标点击位置反向查找（可选）
-      if (!highlightedNode) {
-        // console.warn('[highlightedRowClass] Cannot determine highlighted node');
-        return '';
-      }
+          // 尝试从 row 中提取 at 和 pos
+          let rowAt = row.at;
+          let rowPos = row.pos;
 
-      // 确保 row 对象有 at 和 pos，尝试多种方式获取
-      let rowAt = row.at;
-      let rowPos = row.pos;
+          if (rowAt === undefined) {
+            if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
+              rowAt = row.row.at;
+              rowPos = row.row.pos;
+            } else if (Array.isArray(row)) {
+              rowAt = row[0]?.at || row.at;
+            } else if (typeof row === 'object') {
+              rowAt = row['at'] || row.time || row.ms || undefined;
+            }
+          }
 
-      if (rowAt === undefined) {
-        // Element Plus 表格有时会嵌套传递数据：{row: {at, pos}, rowIndex}
-        if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
-          rowAt = row.row.at;
-          rowPos = row.row.pos;
-        } else if (Array.isArray(row)) {
-          rowAt = row[0]?.at || row.at;
-        } else if (typeof row === 'object') {
-          rowAt = row['at'] || row.time || row.ms || undefined;
+          if (rowPos === undefined) {
+            if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
+              rowPos = row.row.pos;
+            } else if (Array.isArray(row)) {
+              rowPos = row[0]?.pos || row.pos;
+            } else if (typeof row === 'object') {
+              rowPos = row['pos'] || row.position || row.y || undefined;
+            }
+          }
+
+          // 比较 at 和 pos 是否匹配（允许微小误差）
+          const atDiff = Math.abs((rowAt || 0) - (selAt || 0));
+          const posDiff = Math.abs((rowPos || 0) - (selPos || 0));
+
+          if (atDiff < 1 && posDiff < 1) {
+            is_selected = true;
+            break;
+          }
         }
       }
 
-      if (rowPos === undefined) {
-        if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
-          rowPos = row.row.pos;
-        } else if (Array.isArray(row)) {
-          rowPos = row[0]?.pos || row.pos;
-        } else if (typeof row === 'object') {
-          rowPos = row['pos'] || row.position || row.y || undefined;
+      // 如果不是选中的节点，检查是否是当前高亮的节点（点击预览）
+      if (!is_selected) {
+        let highlightedNode = null;
+        if (typeof highlightIdx.value === 'number' && highlightIdx.value >= 0 && highlightIdx.value < ev.actions.length) {
+          highlightedNode = ev.actions[highlightIdx.value];
+        }
+
+        if (highlightedNode) {
+          // 确保 row 对象有 at 和 pos，尝试多种方式获取
+          let rowAt = row.at;
+          let rowPos = row.pos;
+
+          if (rowAt === undefined) {
+            if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
+              rowAt = row.row.at;
+              rowPos = row.row.pos;
+            } else if (Array.isArray(row)) {
+              rowAt = row[0]?.at || row.at;
+            } else if (typeof row === 'object') {
+              rowAt = row['at'] || row.time || row.ms || undefined;
+            }
+          }
+
+          if (rowPos === undefined) {
+            if (row && typeof row === 'object' && row.row && typeof row.row === 'object') {
+              rowPos = row.row.pos;
+            } else if (Array.isArray(row)) {
+              rowPos = row[0]?.pos || row.pos;
+            } else if (typeof row === 'object') {
+              rowPos = row['pos'] || row.position || row.y || undefined;
+            }
+          }
+
+          // 比较 at 和 pos 是否匹配（允许微小误差）
+          const atDiff = Math.abs((rowAt || 0) - (highlightedNode.at || 0));
+          const posDiff = Math.abs((rowPos || 0) - (highlightedNode.pos || 0));
+
+          if (atDiff < 1 && posDiff < 1) {
+            return 'table-row-highlight';
+          }
         }
       }
 
-      // console.log(`[highlightedRowClass] Comparing row(at=${rowAt}, pos=${rowPos}) with highlighted(at=${highlightedNode.at}, pos=${highlightedNode.pos})`);
+      // 如果是选中的节点，返回选中样式类名
+      if (is_selected) {
+        return 'table-row-selected';
+      }
 
-      // 比较 at 和 pos 是否匹配（允许微小误差）
-      const atDiff = Math.abs((rowAt || 0) - (highlightedNode.at || 0));
-      const posDiff = Math.abs((rowPos || 0) - (highlightedNode.pos || 0));
-      // console.log(`[highlightedRowClass] at diff=${atDiff}, pos diff=${posDiff}`);
-
-      return (atDiff < 1 && posDiff < 1) ? 'table-row-highlight' : '';
+      return '';
     };
 
     // 滚动到指定的表格行（如果不在可视区域内）
@@ -997,9 +1102,62 @@ const app = createApp({
     const subdivideDialogVisible = ref(false);
     const subdivideCount = ref(4);
 
-    function onSelectionChange(rows) { selectedActions.value = rows; }
+    function onActionSelect(selection, row) {
+      console.log('[onActionSelect] selection:', selection, 'row:', row);
+      
+      const ev = activeEvent.value;
+      if (!ev || !ev.actions.length) {
+        selectedActions.value = [];
+        return;
+      }
+
+      // 查找 row 在 ev.actions 中的匹配对象
+      let matchedNode = null;
+      for (let i = 0; i < ev.actions.length; i++) {
+        const action = ev.actions[i];
+        if (Math.abs((action.at || 0) - (row.at || 0)) < 1 &&
+            Math.abs((action.pos || 0) - (row.pos || 0)) < 1) {
+          matchedNode = action; // 使用原始数组中的对象引用
+          break;
+        }
+      }
+
+      if (!matchedNode) {
+        selectedActions.value = [];
+        return;
+      }
+
+      // 如果 row 在 selectedActions 中，删除它；否则添加它
+      const idx = selectedActions.value.findIndex(a => 
+        Math.abs((a.at || 0) - (matchedNode.at || 0)) < 1 &&
+        Math.abs((a.pos || 0) - (matchedNode.pos || 0)) < 1
+      );
+
+      if (idx >= 0) {
+        // 已存在，删除（取消勾选）
+        selectedActions.value.splice(idx, 1);
+      } else {
+        // 不存在，添加（勾选）
+        selectedActions.value.push(matchedNode);
+      }
+    }
+
+    // function onSelectionChange(rows) {
+    //   // 如果没有变化，直接返回（避免不必要的重映射）
+    //   if (!Array.isArray(rows)) {
+    //     return;
+    //   }
+    //   if (rows.length == 0 && selectedActions.value.length > 0) {
+    //     return;
+    //   }
+    //   const ev = activeEvent.value;
+    //   if (!ev || !ev.actions.length) {
+    //     selectedActions.value = [];
+    //     return;
+    //   }
+    // }
     function clearTableSelection() {
-      const tbl = actionsTableRef.value;
+      const tbl = actionsTableRef.value[activeName.value];
       if (tbl && tbl.clearSelection) tbl.clearSelection();
       selectedActions.value = [];
     }
@@ -1018,26 +1176,26 @@ const app = createApp({
       if (fromEnd) {
         // 从末尾开始：在最后一个动作后面插入，保持相对时间距离
         const lastAt = ev.actions.length ? ev.actions[ev.actions.length - 1].at : 0;
-        const copiedActions = selected.map(a => ({ ...a, at: lastAt+ a.at + timeOffset }));
-        
+        const copiedActions = selected.map(a => ({ ...a, at: lastAt + a.at + timeOffset }));
+
         console.log('[copySelectedActions]', { fromEnd: true, insertAfter: lastAt, copiedCount: copiedActions.length });
-        
+
         // 插入到末尾
         ev.actions.push(...copiedActions);
       } else {
         // 不勾选：在第一个选中节点前面插入，保持相对时间距离
         const firstSelectedAt = selected[0].at;
         const copiedActions = selected.map(a => ({ ...a, at: a.at - timeOffset }));
-        
+
         console.log('[copySelectedActions]', { fromEnd: false, insertBefore: firstSelectedAt, copiedCount: copiedActions.length });
-        
+
         // 找到插入位置：第一个 at >= (firstSelectedAt - timeOffset) 的位置
         let insertIdx = 0;
         const targetAt = firstSelectedAt - timeOffset;
         while (insertIdx < ev.actions.length && ev.actions[insertIdx].at < targetAt) {
           insertIdx++;
         }
-        
+
         // 插入到指定位置
         ev.actions.splice(insertIdx, 0, ...copiedActions);
       }
@@ -1408,16 +1566,74 @@ const app = createApp({
 
       // 计算节点位置时也要考虑 padding（与 Core.draw 一致）
       // 使用原始鼠标坐标（包含 padding），与 nearestPoint 的坐标系统一致
+      
+      // 使用实际显示的 offsetMs（与 Core.draw 一致）
+      const actualOffset = scrollOffsetMs.value === 0 && !isScrollDragging ? getFirstActionAt(ev) : Math.max(getFirstActionAt(ev), Math.min(scrollOffsetMs.value, eventMaxAt(ev) - displayRangeMs.value));
+      
       const { idx, dist } = nearestPoint(canvas, mouseX, mouseY);
-      console.log(`[onPointerDown] nearestPoint: idx=${idx}, dist=${dist}`);
+      console.log(`[onPointerDown] nearestPoint: idx=${idx}, distToNode=${dist.toFixed(2)}px`);
       if (idx >= 0) {
         const node = ev.actions[idx];
         console.log(`[onPointerDown] selected node: at=${node.at}, pos=${node.pos}`);
       }
-      if (idx >= 0 && dist <= 80) {
-        dragIdx = idx;  // 点击节点后取消拖拽状态（不是拖动）
+
+      // 计算鼠标到连线的距离（用于在连线附近添加节点）
+      let distToLine = Infinity;
+      let closestLineIndex = -1;
+      
+      if (ev.actions.length >= 2) {
+        for (let i = 0; i < ev.actions.length - 1; i++) {
+          const p1 = ev.actions[i];
+          const p2 = ev.actions[i + 1];
+          
+          // 计算点到线段的距离（使用像素坐标）
+          const px1 = ((p1.at - actualOffset) / displayRangeMs.value * canvas.clientWidth + (canvas.clientWidth * 0.05));
+          const py1 = (1 - p1.pos / 100) * canvas.clientHeight - (canvas.clientHeight * 0.05);
+          const px2 = ((p2.at - actualOffset) / displayRangeMs.value * canvas.clientWidth + (canvas.clientWidth * 0.05));
+          const py2 = (1 - p2.pos / 100) * canvas.clientHeight - (canvas.clientHeight * 0.05);
+          
+          const d = pointToLineDistance(mouseX, mouseY, px1, py1, px2, py2);
+          if (d < distToLine) {
+            distToLine = d;
+            closestLineIndex = i;
+          }
+        }
+      }
+      
+      console.log(`[onPointerDown] distToLine=${distToLine.toFixed(2)}px, closestLineIndex=${closestLineIndex}`);
+
+      // 拖动开始时，重新映射 selectedActions（因为节点可能被排序了）
+      reMapSelectedActions();
+
+      // 判断逻辑：
+      // 遍历所有节点，找第一个在点击范围内的（25px）
+      // dist <= 25px：靠近最近节点（节点直径约 8-12px + 容差），高亮并准备拖动
+      // 没有节点在范围内 && distToLine <= 20px：不靠近节点但靠近连线，新增节点
+      // 其他情况：空白点击，取消高亮
+      
+      let clickedNodeIdx = -1;
+      
+      if (ev.actions.length > 0) {
+        // 遍历所有节点，找第一个在点击范围内的
+        for (let i = 0; i < ev.actions.length; i++) {
+          const node = ev.actions[i];
+          const px = ((node.at - actualOffset) / displayRangeMs.value * canvas.clientWidth + (canvas.clientWidth * 0.05));
+          const py = (1 - node.pos / 100) * canvas.clientHeight - (canvas.clientHeight * 0.05);
+          const d = Math.hypot(mouseX - px, mouseY - py);
+          
+          if (d <= 25) {
+            clickedNodeIdx = i;
+            break; // 找到第一个就停止
+          }
+        }
+      }
+      
+      console.log(`[onPointerDown] Decision: clickedNodeIdx=${clickedNodeIdx}, nearestPoint dist=${dist.toFixed(2)}px, distToLine=${distToLine.toFixed(2)}px`);
+
+      if (clickedNodeIdx >= 0) {
+        dragIdx = clickedNodeIdx;  // 点击节点后进入拖拽状态（不是新增）
         // canvas 点击节点时，同时设置 highlightIdx（与表格行点击逻辑一致）
-        const node = ev.actions[idx];
+        const node = ev.actions[clickedNodeIdx];
         // 使用 at+pos 匹配找到 filteredActions 中的索引
         const highlightedNode = filteredActions.value.find(fa =>
           Math.abs((fa.at || 0) - (node.at || 0)) < 1 &&
@@ -1427,19 +1643,28 @@ const app = createApp({
           highlightIdx.value = ev.actions.indexOf(highlightedNode);
         } else {
           // 如果没有找到，使用全数组索引（兼容情况）
-          highlightIdx.value = idx;
+          highlightIdx.value = clickedNodeIdx;
         }
 
-        console.log(`[onPointerDown] highlightIdx set to: ${highlightIdx.value}`);
+        console.log(`[onPointerDown] 点击节点：highlightIdx set to: ${highlightIdx.value}`);
 
         // 滚动到可视区域（如果高亮行不在视图内）
         scrollToHighlightedRow(node);
 
         draw();  // 重绘 canvas 显示高亮样式
-      } else {
+      } else if (distToLine <= 20) {
+        // 在连线附近添加新节点（没有节点在点击范围内，但靠近连线）
         const p = { at: Math.round(ms), pos: Math.round(clamp(pos, 0, 100)) };
         ev.actions.push(p); sortDedupe(activeIndex.value);
         dragIdx = ev.actions.indexOf(p);
+        
+        console.log(`[onPointerDown] 连线附近添加新节点：distToLine=${distToLine.toFixed(2)}px`);
+      } else {
+        // >20px：不添加节点，只取消高亮（如果有的话）
+        highlightIdx.value = -1;
+        dragIdx = -1;
+        
+        console.log(`[onPointerDown] 空白点击，取消高亮`);
       }
     }
     function onPointerMove(e) {
@@ -1455,7 +1680,33 @@ const app = createApp({
       if (dragIdx < 0) return;
       const ev = activeEvent.value; const p = ev && ev.actions[dragIdx]; if (!p) return;
       const { ms, pos } = toData(e);
-      p.at = Math.max(0, Math.round(ms)); p.pos = Math.round(clamp(pos, 0, 100));
+      // 计算移动的变化量（相对于被拖动的节点）
+      const draggedNode = ev.actions[dragIdx];
+      const dx = Math.max(0, Math.round(ms)) - (draggedNode.at || 0);
+      const dy = Math.round(clamp(pos, 0, 100)) - (draggedNode.pos || 0);
+
+      // 更新被拖动的节点
+      p.at = Math.max(0, Math.round(ms));
+      p.pos = Math.round(clamp(pos, 0, 100));
+
+      // 如果当前选中有节点，并且拖动的是其中一个，让所有选中的节点都移动相同的距离
+      if (selectedActions.value.length > 0 && selectedActions.value.includes(draggedNode)) {
+        for (const node of selectedActions.value) {
+          if (node !== p) { // 避免重复更新被拖动的节点
+            node.at = Math.max(0, Math.round((node.at || 0) + dx));
+            node.pos = Math.round(Math.max(0, Math.min(100, (node.pos || 0) + dy)));
+          }
+        }
+        // 使用 nextTick 确保 DOM 更新后再查找
+        nextTick(() => {
+          const table = actionsTableRef.value[activeName.value];
+          if (table && table.toggleRowSelection) {
+            for (const row of selectedActions.value) {
+              table.toggleRowSelection(row, true); // true 表示强制选中
+            }
+          }
+        });
+      }
     }
     function onPointerUp(e) {
       if (isRightClick) {
@@ -1484,7 +1735,14 @@ const app = createApp({
         draw();
         return;
       }
-      if (dragIdx >= 0) { sortDedupe(activeIndex.value); dragIdx = -1; }
+
+      // 拖动结束：保持选中状态，但需要重新同步（因为节点可能被排序了）
+      if (dragIdx >= 0) {
+        sortDedupe(activeIndex.value);
+        dragIdx = -1;
+        // 拖动结束后，保留当前选中的节点，只是重新映射一下引用
+        reMapSelectedActions();
+      }
     }
     function onContextMenu(e) { e.preventDefault(); }
 
@@ -1539,6 +1797,25 @@ const app = createApp({
           console.log(`[draw] visHighlightIdx=${visHighlightIdx}`);
         }
 
+        // selectedActions：获取选中的节点列表，转换为 filteredActions 的索引
+        const visSelectedIndices = [];
+        if (selectedActions.value.length > 0) {
+          for (const selAction of selectedActions.value) {
+            const selAt = selAction.at;
+            const selPos = selAction.pos;
+
+            // 在 visible 数组中查找匹配的节点（使用 at+pos 匹配）
+            const idx = visible.findIndex(a =>
+              Math.abs((a.at || 0) - (selAt || 0)) < 1 &&
+              Math.abs((a.pos || 0) - (selPos || 0)) < 1
+            );
+
+            if (idx >= 0) {
+              visSelectedIndices.push(idx);
+            }
+          }
+        }
+
         // highlightAt/highlightPos：始终使用全数组索引对应的值（支持节点不在 visible 范围内）
         const highlightAt = ev.actions[highlightIdx.value]?.at;
         const highlightPos = ev.actions[highlightIdx.value]?.pos;
@@ -1550,6 +1827,7 @@ const app = createApp({
           highlightIdx: visHighlightIdx,  // filteredActions 的索引（用于直接比较）
           highlightAt: highlightAt,        // 全数组的 at 值（用于 at+pos 匹配）
           highlightPos: highlightPos,      // 全数组的 pos 值
+          selectedIndices: visSelectedIndices,  // 选中的节点在 visible 数组中的索引列表
           playing: playing.value, playheadMs: playheadMs.value,
           isRightSelecting, selStartX, selStartY, selCurX, selCurY,
           vm: displayRangeMs.value,
@@ -1718,6 +1996,13 @@ const app = createApp({
       }
       nextTick(draw);
     }, { deep: true });
+
+    // 监听 selectedActions 变化，触发 Canvas 重绘（选中样式）
+    watch(selectedActions, () => {
+      console.log('[watch selectedActions]', selectedActions.value.length, 'nodes selected');
+      nextTick(draw);
+    }, { deep: true });
+
     watch(playing, v => { if (!v && rafId) cancelAnimationFrame(rafId); });
 
     function onMainTabChange(tab) {
@@ -1798,7 +2083,7 @@ const app = createApp({
       waveShapes, gen, appendWave,
       pulseDialogVisible, pulseText, pulseFileRef, pulseBreakFlat, pulseVariation, triggerPulseFile, onPulseFile, doImportPulse,
       actionsTableRef, selectedActions, rangeDelStart, rangeDelEnd, subdivideDialogVisible, subdivideCount,
-      onSelectionChange, deleteSelected, clearAllActions, deleteByRange, copySelectedActions, openSubdivideDialog, doSubdivide,
+      onActionSelect, deleteSelected, clearAllActions, deleteByRange, copySelectedActions, openSubdivideDialog, doSubdivide,
       onMainTabChange, saveZoomMin, zoomMinSaved,
       // 表格高亮样式方法（必须加入到 return 中才能被模板使用）
       highlightedRowClass,

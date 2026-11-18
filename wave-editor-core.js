@@ -233,6 +233,20 @@
           ctx.arc(X(a.at), Y(a.pos), rOuter, 0, Math.PI * 2);
           ctx.stroke();
         }
+        
+        // 选中节点加外环（使用 at+pos 匹配，优先于高亮）
+        if (opts.selectedIndices !== undefined && opts.selectedIndices.length > 0) {
+          const is_selected = opts.selectedIndices.some(idx => idx === i);
+          if (is_selected) {
+            // 选中样式：蓝色外环（不要影响拖拽和高亮的橙色填充）
+            const rOuter = 12;
+            ctx.strokeStyle = '#0066ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(X(a.at), Y(a.pos), rOuter, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+        }
       });
     }
 

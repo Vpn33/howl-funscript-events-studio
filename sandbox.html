@@ -38,6 +38,7 @@
   .url-empty { color: #c0c4cc; font-size: 12px; }
   /* 表格高亮行样式 */
   .table-row-highlight { background-color: #ecf5ff !important; }
+  .table-row-selected { background-color: #e6f7ff !important; color: #0066cc !important; font-weight: 500 !important; }
   #pane-howlDevice .el-button+.el-button{margin-left:0px;}
   #pane-howlDevice .current-power{color:#E6A23C;}
   #pane-howlDevice .max-power{color:#ff0000;}
@@ -248,7 +249,7 @@
             <!-- 动作表 -->
             <el-table id="actionsTable" :data="filteredActions" size="small" max-height="260" border 
                       style="overflow-x: auto; overflow-y: scroll; height: 260px; max-height: 260px;"
-                      ref="actionsTableRef" @selection-change="onSelectionChange" @row-click="onTableRowClick"
+                      ref="actionsTableRef" @row-click="onTableRowClick" @select="onActionSelect"
                       :row-class-name="highlightedRowClass">
               <el-table-column type="selection" width="40"></el-table-column>
               <el-table-column label="#" width="50">
