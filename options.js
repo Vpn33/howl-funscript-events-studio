@@ -995,13 +995,56 @@ const app = createApp({
     const rangeDelStart = ref(null);
     const rangeDelEnd = ref(null);
     const subdivideDialogVisible = ref(false);
-    const subdivideCount = ref(10);
+    const subdivideCount = ref(4);
 
     function onSelectionChange(rows) { selectedActions.value = rows; }
     function clearTableSelection() {
       const tbl = actionsTableRef.value;
       if (tbl && tbl.clearSelection) tbl.clearSelection();
       selectedActions.value = [];
+    }
+    function copySelectedActions() {
+      const ev = activeEvent.value;
+      if (!ev) return ElMessage.warning('请先选择一个事件');
+      if (!selectedActions.value.length) return ElMessage.warning('请先勾选要复制的动作');
+
+      // 按时间排序，确保顺序正确
+      const selected = [...selectedActions.value].sort((a, b) => a.at - b.at);
+
+      // 获取从末尾开始的选项和时间偏移量（避免时间冲突）
+      const fromEnd = gen.fromEnd;
+      const timeOffset = 50; // 复制节点与目标位置的距离 (ms)
+
+      if (fromEnd) {
+        // 从末尾开始：在最后一个动作后面插入，保持相对时间距离
+        const lastAt = ev.actions.length ? ev.actions[ev.actions.length - 1].at : 0;
+        const copiedActions = selected.map(a => ({ ...a, at: lastAt+ a.at + timeOffset }));
+        
+        console.log('[copySelectedActions]', { fromEnd: true, insertAfter: lastAt, copiedCount: copiedActions.length });
+        
+        // 插入到末尾
+        ev.actions.push(...copiedActions);
+      } else {
+        // 不勾选：在第一个选中节点前面插入，保持相对时间距离
+        const firstSelectedAt = selected[0].at;
+        const copiedActions = selected.map(a => ({ ...a, at: a.at - timeOffset }));
+        
+        console.log('[copySelectedActions]', { fromEnd: false, insertBefore: firstSelectedAt, copiedCount: copiedActions.length });
+        
+        // 找到插入位置：第一个 at >= (firstSelectedAt - timeOffset) 的位置
+        let insertIdx = 0;
+        const targetAt = firstSelectedAt - timeOffset;
+        while (insertIdx < ev.actions.length && ev.actions[insertIdx].at < targetAt) {
+          insertIdx++;
+        }
+        
+        // 插入到指定位置
+        ev.actions.splice(insertIdx, 0, ...copiedActions);
+      }
+
+      sortDedupe(activeIndex.value);
+      clearTableSelection();
+      ElMessage.success(`已复制 ${selected.length} 个动作${fromEnd ? ' (到末尾)' : ' (到开头)'}`);
     }
     function deleteSelected() {
       const ev = activeEvent.value; if (!ev) return;
@@ -1040,7 +1083,7 @@ const app = createApp({
     function openSubdivideDialog() {
       const ev = activeEvent.value;
       if (!ev) return ElMessage.warning('请先选择一个事件');
-      subdivideCount.value = 10; // 重置滑块值
+      subdivideCount.value = 4; // 重置滑块值
       subdivideDialogVisible.value = true;
     }
 
@@ -1755,7 +1798,7 @@ const app = createApp({
       waveShapes, gen, appendWave,
       pulseDialogVisible, pulseText, pulseFileRef, pulseBreakFlat, pulseVariation, triggerPulseFile, onPulseFile, doImportPulse,
       actionsTableRef, selectedActions, rangeDelStart, rangeDelEnd, subdivideDialogVisible, subdivideCount,
-      onSelectionChange, deleteSelected, clearAllActions, deleteByRange, openSubdivideDialog, doSubdivide,
+      onSelectionChange, deleteSelected, clearAllActions, deleteByRange, copySelectedActions, openSubdivideDialog, doSubdivide,
       onMainTabChange, saveZoomMin, zoomMinSaved,
       // 表格高亮样式方法（必须加入到 return 中才能被模板使用）
       highlightedRowClass,

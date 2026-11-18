@@ -283,6 +283,8 @@
                          @click="clearAllActions">清空全部</el-button>
               <el-button size="small" type="info" plain :disabled="!selectedActions.length || selectedActions.length !== 2"
                          @click="openSubdivideDialog">细分 ({{ selectedActions.length }}/{{ 2 }})</el-button>
+              <el-button size="small" type="success" plain :disabled="!selectedActions.length"
+                         @click="copySelectedActions">复制 ({{ selectedActions.length }})</el-button>
               <el-divider direction="vertical"></el-divider>
               <span class="wg-label">按时间删除</span>
               <el-input-number v-model="rangeDelStart" :min="0" :step="100" size="small" :controls="false" style="width:90px"></el-input-number>
