@@ -1103,59 +1103,37 @@ const app = createApp({
     const subdivideCount = ref(4);
 
     function onActionSelect(selection, row) {
-      console.log('[onActionSelect] selection:', selection, 'row:', row);
-      
       const ev = activeEvent.value;
       if (!ev || !ev.actions.length) {
         selectedActions.value = [];
         return;
       }
 
-      // 查找 row 在 ev.actions 中的匹配对象
-      let matchedNode = null;
-      for (let i = 0; i < ev.actions.length; i++) {
-        const action = ev.actions[i];
-        if (Math.abs((action.at || 0) - (row.at || 0)) < 1 &&
-            Math.abs((action.pos || 0) - (row.pos || 0)) < 1) {
-          matchedNode = action; // 使用原始数组中的对象引用
-          break;
+      console.log('[onActionSelect]', { selectionCount: selection ? selection.length : 0, rowAt: row.at, rowPos: row.pos });
+
+      // 根据 Element Plus 的 selection 参数（包含所有当前选中的节点），重新映射到原始数组
+      selectedActions.value = [];
+      
+      if (selection && Array.isArray(selection)) {
+        for (const selRow of selection) {
+          let matchedNode = null;
+          for (let i = 0; i < ev.actions.length; i++) {
+            const action = ev.actions[i];
+            if (Math.abs((action.at || 0) - (selRow.at || 0)) < 1 &&
+                Math.abs((action.pos || 0) - (selRow.pos || 0)) < 1) {
+              matchedNode = action; // 使用原始数组中的对象引用
+              break;
+            }
+          }
+          if (matchedNode) {
+            selectedActions.value.push(matchedNode);
+          }
         }
       }
 
-      if (!matchedNode) {
-        selectedActions.value = [];
-        return;
-      }
-
-      // 如果 row 在 selectedActions 中，删除它；否则添加它
-      const idx = selectedActions.value.findIndex(a => 
-        Math.abs((a.at || 0) - (matchedNode.at || 0)) < 1 &&
-        Math.abs((a.pos || 0) - (matchedNode.pos || 0)) < 1
-      );
-
-      if (idx >= 0) {
-        // 已存在，删除（取消勾选）
-        selectedActions.value.splice(idx, 1);
-      } else {
-        // 不存在，添加（勾选）
-        selectedActions.value.push(matchedNode);
-      }
+      console.log('[onActionSelect]', { afterMapCount: selectedActions.value.length });
     }
 
-    // function onSelectionChange(rows) {
-    //   // 如果没有变化，直接返回（避免不必要的重映射）
-    //   if (!Array.isArray(rows)) {
-    //     return;
-    //   }
-    //   if (rows.length == 0 && selectedActions.value.length > 0) {
-    //     return;
-    //   }
-    //   const ev = activeEvent.value;
-    //   if (!ev || !ev.actions.length) {
-    //     selectedActions.value = [];
-    //     return;
-    //   }
-    // }
     function clearTableSelection() {
       const tbl = actionsTableRef.value[activeName.value];
       if (tbl && tbl.clearSelection) tbl.clearSelection();
@@ -1292,19 +1270,29 @@ const app = createApp({
 
       // 添加第二个节点（保持原位置）
       newActions.push(secondNode);
+      
+      // 使用 at+pos 匹配找到第一个节点（时间小的那个）
+      const firstIdx = ev.actions.findIndex(a => 
+        Math.abs((a.at || 0) - (firstNode.at || 0)) < 1 &&
+        Math.abs((a.pos || 0) - (firstNode.pos || 0)) < 1
+      );
+      
+      // 使用 at+pos 匹配找到第二个节点
+      const secondIdx = ev.actions.findIndex(a => 
+        Math.abs((a.at || 0) - (secondNode.at || 0)) < 1 &&
+        Math.abs((a.pos || 0) - (secondNode.pos || 0)) < 1
+      );
 
-      // 替换原来的两个节点
-      const beforeLen = ev.actions.length;
-      const firstIdx = ev.actions.findIndex(a => a.id === firstNode.id);
-      const secondIdx = ev.actions.findIndex(a => a.id === secondNode.id);
+      console.log('[doSubdivide]', { firstIdx, secondIdx, found: (firstIdx !== -1 && secondIdx !== -1) });
 
       if (firstIdx !== -1 && secondIdx !== -1) {
         // 确保先找第一个节点（时间小的那个）
         if (secondIdx < firstIdx) [firstIdx, secondIdx] = [secondIdx, firstIdx];
 
-        // 删除第二个节点，从第一个节点位置开始插入新节点
-        ev.actions.splice(secondIdx, 1); // 删除第二个节点
-        ev.actions.splice(firstIdx, 1, ...newActions); // 替换第一个节点为新节点列表
+        // console.log('[doSubdivide]', `before: action[0]=${ev.actions[0]?.at}, action[firstIdx]=${ev.actions[firstIdx]?.at}`);
+        // 在第一个节点位置删除原来的两个节点，然后插入新节点列表
+        ev.actions.splice(firstIdx, 2, ...newActions);
+        // console.log('[doSubdivide]', `after replace: action[0]=${ev.actions[0]?.at}, length=${ev.actions.length}`);
       }
 
       sortDedupe(activeIndex.value);
