@@ -1508,16 +1508,16 @@ const app = createApp({
         return Core.nearestPoint(ev.actions, canvas, mouseX, mouseY, displayRangeMs.value, actualOffset);
       }
 
-      // fallback: fallback 到本地实现（与 draw 一致）
+      // fallback: fallback 到本地实现（与 Core.nearestPoint 一致）
       const rect = canvas.getBoundingClientRect();
       const width = rect.width;
       let best = { idx: -1, dist: Infinity };
       ev.actions.forEach((a, i) => {
-        // 使用与 Core.draw 相同的 X/Y 映射公式（考虑 padding）
-        // mouseX, mouseY 是原始鼠标坐标，需要转换为数据坐标空间进行比较
+        // 使用与 Core.draw 相同的 X/Y 映射公式（包含 padding）
+        // mouseX, mouseY 是 Canvas 坐标系中的原始鼠标坐标（包含 padding），需要转换为数据坐标空间进行比较
         const px = ((a.at - actualOffset) / displayRangeMs.value * width + (width * 0.05)),
           py = (1 - a.pos / 100) * rect.height - (rect.height * 0.05);
-        // 直接使用原始鼠标坐标与数据点映射坐标比较
+        // 使用传入的 Canvas 坐标系坐标（包含 padding）进行比较
         const d = Math.hypot(mouseX - px, mouseY - py);
         if (d < best.dist) best = { idx: i, dist: d };
       });
@@ -1527,6 +1527,11 @@ const app = createApp({
       const ev = activeEvent.value; if (!ev) return;
       getCanvas().setPointerCapture(e.pointerId);
       const canvas = getCanvas();
+      
+      // 强制刷新 canvas 尺寸（解决控制台打开后 DOM 重排导致的高度变化问题）
+      // 通过触发 reflow 确保使用最新的 DOM 尺寸
+      void (canvas.offsetWidth + canvas.offsetHeight);
+      
       const rect = canvas.getBoundingClientRect();
       console.log(`[onPointerDown] mouse X=${e.clientX}, Y=${e.clientY}`);
 
@@ -1535,10 +1540,8 @@ const app = createApp({
       const paddingY = rect.height * 0.05;
 
       // 将鼠标坐标转换为 canvas 坐标系（减去 padding）
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-      const clickX = mouseX > paddingX ? mouseX - paddingX : 0;
-      const clickY = mouseY > paddingY ? mouseY - paddingY : 0;
+      const clickX = e.clientX - rect.left > paddingX ? e.clientX - rect.left - paddingX : 0;
+      const clickY = e.clientY - rect.top > paddingY ? e.clientY - rect.top - paddingY : 0;
 
       console.log(`[onPointerDown] canvas X=${clickX}, Y=${clickY}, paddingX=${paddingX}, paddingY=${paddingY}`);
 
@@ -1553,12 +1556,13 @@ const app = createApp({
       }
 
       // 计算节点位置时也要考虑 padding（与 Core.draw 一致）
-      // 使用原始鼠标坐标（包含 padding），与 nearestPoint 的坐标系统一致
+      // 使用 Canvas 坐标系中的原始鼠标坐标（包含 padding），与 nearestPoint 的坐标系统一致
       
       // 使用实际显示的 offsetMs（与 Core.draw 一致）
       const actualOffset = scrollOffsetMs.value === 0 && !isScrollDragging ? getFirstActionAt(ev) : Math.max(getFirstActionAt(ev), Math.min(scrollOffsetMs.value, eventMaxAt(ev) - displayRangeMs.value));
       
-      const { idx, dist } = nearestPoint(canvas, mouseX, mouseY);
+      // 传入 Canvas 坐标系中的原始鼠标坐标（包含 padding），与 Core.nearestPoint 的坐标系统一致
+      const { idx, dist } = nearestPoint(canvas, e.clientX - rect.left, e.clientY - rect.top);
       console.log(`[onPointerDown] nearestPoint: idx=${idx}, distToNode=${dist.toFixed(2)}px`);
       if (idx >= 0) {
         const node = ev.actions[idx];
@@ -1580,7 +1584,8 @@ const app = createApp({
           const px2 = ((p2.at - actualOffset) / displayRangeMs.value * canvas.clientWidth + (canvas.clientWidth * 0.05));
           const py2 = (1 - p2.pos / 100) * canvas.clientHeight - (canvas.clientHeight * 0.05);
           
-          const d = pointToLineDistance(mouseX, mouseY, px1, py1, px2, py2);
+          // 使用 Canvas 坐标系中的原始鼠标坐标（包含 padding）进行比较
+          const d = pointToLineDistance(e.clientX - rect.left, e.clientY - rect.top, px1, py1, px2, py2);
           if (d < distToLine) {
             distToLine = d;
             closestLineIndex = i;
@@ -1594,7 +1599,7 @@ const app = createApp({
       reMapSelectedActions();
 
       // 判断逻辑：
-      // 遍历所有节点，找第一个在点击范围内的（25px）
+      // 优先使用 nearestPoint 找到的最近节点（如果也在点击范围内）
       // dist <= 25px：靠近最近节点（节点直径约 8-12px + 容差），高亮并准备拖动
       // 没有节点在范围内 && distToLine <= 20px：不靠近节点但靠近连线，新增节点
       // 其他情况：空白点击，取消高亮
@@ -1602,16 +1607,22 @@ const app = createApp({
       let clickedNodeIdx = -1;
       
       if (ev.actions.length > 0) {
-        // 遍历所有节点，找第一个在点击范围内的
-        for (let i = 0; i < ev.actions.length; i++) {
-          const node = ev.actions[i];
-          const px = ((node.at - actualOffset) / displayRangeMs.value * canvas.clientWidth + (canvas.clientWidth * 0.05));
-          const py = (1 - node.pos / 100) * canvas.clientHeight - (canvas.clientHeight * 0.05);
-          const d = Math.hypot(mouseX - px, mouseY - py);
-          
-          if (d <= 25) {
-            clickedNodeIdx = i;
-            break; // 找到第一个就停止
+        // 优先使用 nearestPoint 找到的最近节点（更精确）
+        if (idx >= 0 && dist <= 30) {  // 增加点击容差到 30px，避免误判为连线附近
+          clickedNodeIdx = idx;
+        } else {
+          // fallback：遍历所有节点，找第一个在点击范围内的
+          for (let i = 0; i < ev.actions.length; i++) {
+            const node = ev.actions[i];
+            const px = ((node.at - actualOffset) / displayRangeMs.value * canvas.clientWidth + (canvas.clientWidth * 0.05));
+            const py = (1 - node.pos / 100) * canvas.clientHeight - (canvas.clientHeight * 0.05);
+            // 使用原始鼠标坐标（包含 padding）进行比较
+            const d = Math.hypot(e.clientX - px, e.clientY - py);
+            
+            if (d <= 30) {  // 增加点击容差到 30px，避免误判为连线附近
+              clickedNodeIdx = i;
+              break; // 找到第一个就停止
+            }
           }
         }
       }
@@ -1640,7 +1651,7 @@ const app = createApp({
         scrollToHighlightedRow(node);
 
         draw();  // 重绘 canvas 显示高亮样式
-      } else if (distToLine <= 20) {
+      } else if (distToLine <= 20 && clickedNodeIdx === -1) {
         // 在连线附近添加新节点（没有节点在点击范围内，但靠近连线）
         const p = { at: Math.round(ms), pos: Math.round(clamp(pos, 0, 100)) };
         ev.actions.push(p); sortDedupe(activeIndex.value);

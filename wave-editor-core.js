@@ -95,7 +95,7 @@
     if (!actions || !actions.length) return { idx: -1, dist: Infinity };
     offsetMs = offsetMs || 0;
     
-    // 计算 padding（与 draw 完全一致）
+    // 使用与 draw 完全一致的 Canvas 尺寸（确保坐标系一致）
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;  // CSS 像素宽度（与 draw 一致）
     const h = canvas.clientHeight;  // CSS 像素高度（与 draw 一致）
